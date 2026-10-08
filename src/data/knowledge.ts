@@ -1,3 +1,5 @@
+import type { FileFormat } from "@/components/app/file-formats";
+
 export type SourceApp =
   | "drive"
   | "slack"
@@ -446,67 +448,136 @@ export const agents: Agent[] = [
 export type ArtifactItem = {
   id: string;
   title: string;
-  kind: ArtifactKind;
+  format: FileFormat;
+  /** Opens in the assistant canvas when set. */
+  kind?: ArtifactKind;
   versions: number;
   sources: number;
   updated: string;
   author: string;
+  size: string;
+  shared: "private" | "team" | "org";
+  pinned?: boolean;
 };
 
 export const artifactItems: ArtifactItem[] = [
   {
     id: "f1",
     title: "GA readiness deck",
+    format: "pptx",
     kind: "slides",
     versions: 4,
     sources: 5,
     updated: "10 min ago",
     author: "Assistant",
+    size: "2.4 MB",
+    shared: "team",
+    pinned: true,
   },
   {
     id: "f2",
     title: "Q3 pricing memo",
+    format: "docx",
     kind: "doc",
     versions: 2,
     sources: 7,
     updated: "yesterday",
     author: "Ava Thompson",
+    size: "184 KB",
+    shared: "private",
   },
   {
     id: "f3",
     title: "Acme bake-off results",
+    format: "xlsx",
     kind: "sheet",
     versions: 3,
     sources: 3,
     updated: "3 days ago",
     author: "Assistant",
+    size: "96 KB",
+    shared: "org",
+    pinned: true,
   },
   {
     id: "f4",
+    title: "Support quality dashboard",
+    format: "html",
+    versions: 6,
+    sources: 12,
+    updated: "today",
+    author: "Assistant",
+    size: "Live app",
+    shared: "team",
+  },
+  {
+    id: "f5",
+    title: "Globex security questionnaire",
+    format: "pdf",
+    versions: 5,
+    sources: 24,
+    updated: "Mon",
+    author: "RFP responder",
+    size: "1.1 MB",
+    shared: "private",
+  },
+  {
+    id: "f6",
     title: "Weekly status — Sprint 42",
+    format: "pptx",
     kind: "slides",
     versions: 1,
     sources: 18,
     updated: "Fri",
     author: "Weekly status deck",
+    size: "3.0 MB",
+    shared: "team",
   },
   {
-    id: "f5",
-    title: "Globex security questionnaire",
-    kind: "doc",
-    versions: 5,
-    sources: 24,
-    updated: "Mon",
-    author: "RFP responder",
-  },
-  {
-    id: "f6",
+    id: "f7",
     title: "Renewal risk — October",
+    format: "xlsx",
     kind: "sheet",
     versions: 1,
     sources: 41,
     updated: "Mon",
     author: "Renewal risk analyst",
+    size: "212 KB",
+    shared: "team",
+  },
+  {
+    id: "f8",
+    title: "Onboarding playbook v2",
+    format: "md",
+    kind: "doc",
+    versions: 8,
+    sources: 9,
+    updated: "last week",
+    author: "Sofia Garcia",
+    size: "22 KB",
+    shared: "org",
+  },
+  {
+    id: "f9",
+    title: "Ticket volume export",
+    format: "csv",
+    versions: 1,
+    sources: 1,
+    updated: "last week",
+    author: "Assistant",
+    size: "1.8 MB",
+    shared: "private",
+  },
+  {
+    id: "f10",
+    title: "Architecture diagram",
+    format: "png",
+    versions: 2,
+    sources: 3,
+    updated: "2 weeks ago",
+    author: "Mia Chen",
+    size: "640 KB",
+    shared: "team",
   },
 ];
 
@@ -539,4 +610,139 @@ export const knowledgeGaps = [
     status: "Contradicting docs",
   },
   { question: "Parental leave policy for contractors", asks: 19, status: "No source found" },
+];
+
+/** Maps a document source to its BrandLogo id. */
+export const sourceLogo: Record<SourceApp, string> = {
+  drive: "googledrive",
+  slack: "slack",
+  confluence: "confluence",
+  jira: "jira",
+  github: "github",
+  notion: "notion",
+  salesforce: "salesforce",
+  sharepoint: "sharepoint",
+  gmail: "gmail",
+  zendesk: "zendesk",
+};
+
+export type CatalogCategory =
+  "Messaging" | "Storage" | "Wiki & Docs" | "Tickets & Projects" | "Code" | "Sales & CRM" | "Other";
+
+export type CatalogEntry = {
+  logo: string;
+  name: string;
+  category: CatalogCategory;
+  sync: "Webhook" | "Poll" | "Federated" | "Upload";
+  acl: boolean;
+};
+
+export const connectorCatalog: CatalogEntry[] = [
+  { logo: "slack", name: "Slack", category: "Messaging", sync: "Webhook", acl: true },
+  { logo: "teams", name: "Microsoft Teams", category: "Messaging", sync: "Webhook", acl: true },
+  { logo: "gmail", name: "Gmail", category: "Messaging", sync: "Webhook", acl: true },
+  { logo: "outlook", name: "Outlook", category: "Messaging", sync: "Webhook", acl: true },
+  { logo: "discord", name: "Discord", category: "Messaging", sync: "Webhook", acl: true },
+  { logo: "zoom", name: "Zoom", category: "Messaging", sync: "Poll", acl: true },
+  { logo: "intercom", name: "Intercom", category: "Messaging", sync: "Webhook", acl: false },
+  { logo: "email", name: "Email (IMAP)", category: "Messaging", sync: "Poll", acl: false },
+  { logo: "googledrive", name: "Google Drive", category: "Storage", sync: "Webhook", acl: true },
+  { logo: "onedrive", name: "OneDrive", category: "Storage", sync: "Webhook", acl: true },
+  { logo: "dropbox", name: "Dropbox", category: "Storage", sync: "Webhook", acl: true },
+  { logo: "box", name: "Box", category: "Storage", sync: "Webhook", acl: true },
+  { logo: "s3", name: "Amazon S3", category: "Storage", sync: "Poll", acl: false },
+  { logo: "sharepoint", name: "SharePoint", category: "Wiki & Docs", sync: "Webhook", acl: true },
+  { logo: "confluence", name: "Confluence", category: "Wiki & Docs", sync: "Webhook", acl: true },
+  { logo: "notion", name: "Notion", category: "Wiki & Docs", sync: "Poll", acl: true },
+  { logo: "coda", name: "Coda", category: "Wiki & Docs", sync: "Poll", acl: true },
+  { logo: "gitbook", name: "GitBook", category: "Wiki & Docs", sync: "Poll", acl: false },
+  { logo: "outline", name: "Outline", category: "Wiki & Docs", sync: "Webhook", acl: true },
+  { logo: "guru", name: "Guru", category: "Wiki & Docs", sync: "Poll", acl: true },
+  {
+    logo: "googlecalendar",
+    name: "Google Calendar",
+    category: "Wiki & Docs",
+    sync: "Webhook",
+    acl: true,
+  },
+  { logo: "jira", name: "Jira", category: "Tickets & Projects", sync: "Webhook", acl: true },
+  { logo: "linear", name: "Linear", category: "Tickets & Projects", sync: "Webhook", acl: true },
+  { logo: "asana", name: "Asana", category: "Tickets & Projects", sync: "Webhook", acl: true },
+  { logo: "clickup", name: "ClickUp", category: "Tickets & Projects", sync: "Webhook", acl: true },
+  { logo: "trello", name: "Trello", category: "Tickets & Projects", sync: "Webhook", acl: true },
+  { logo: "airtable", name: "Airtable", category: "Tickets & Projects", sync: "Poll", acl: true },
+  { logo: "zendesk", name: "Zendesk", category: "Tickets & Projects", sync: "Webhook", acl: true },
+  { logo: "freshdesk", name: "Freshdesk", category: "Tickets & Projects", sync: "Poll", acl: true },
+  {
+    logo: "servicenow",
+    name: "ServiceNow",
+    category: "Tickets & Projects",
+    sync: "Poll",
+    acl: true,
+  },
+  { logo: "figma", name: "Figma", category: "Tickets & Projects", sync: "Poll", acl: true },
+  { logo: "github", name: "GitHub", category: "Code", sync: "Webhook", acl: true },
+  { logo: "gitlab", name: "GitLab", category: "Code", sync: "Webhook", acl: true },
+  { logo: "bitbucket", name: "Bitbucket", category: "Code", sync: "Webhook", acl: true },
+  { logo: "salesforce", name: "Salesforce", category: "Sales & CRM", sync: "Webhook", acl: true },
+  { logo: "hubspot", name: "HubSpot", category: "Sales & CRM", sync: "Webhook", acl: true },
+  { logo: "gong", name: "Gong", category: "Sales & CRM", sync: "Poll", acl: true },
+  { logo: "web", name: "Website crawler", category: "Other", sync: "Poll", acl: false },
+  { logo: "file", name: "File upload", category: "Other", sync: "Upload", acl: true },
+  { logo: "postgres", name: "SQL database", category: "Other", sync: "Federated", acl: true },
+  { logo: "custom", name: "Any MCP server", category: "Other", sync: "Federated", acl: true },
+];
+
+export type ModelProvider = {
+  logo: string;
+  name: string;
+  models: string[];
+  status: "connected" | "available";
+  role: string;
+};
+
+export const modelProviders: ModelProvider[] = [
+  {
+    logo: "anthropic",
+    name: "Anthropic",
+    models: ["Claude Opus 5.5", "Claude Sonnet 5.5", "Claude Haiku 5.5"],
+    status: "connected",
+    role: "Default for answers, research and artifacts",
+  },
+  { logo: "openai", name: "OpenAI", models: ["GPT family"], status: "available", role: "Optional" },
+  {
+    logo: "googlegemini",
+    name: "Google Gemini",
+    models: ["Gemini family"],
+    status: "available",
+    role: "Optional",
+  },
+  {
+    logo: "bedrock",
+    name: "Amazon Bedrock",
+    models: ["Claude via Bedrock"],
+    status: "available",
+    role: "VPC / data residency",
+  },
+  {
+    logo: "mistralai",
+    name: "Mistral AI",
+    models: ["Mistral family"],
+    status: "available",
+    role: "Optional",
+  },
+  {
+    logo: "ollama",
+    name: "Ollama",
+    models: ["Local open-weight models"],
+    status: "connected",
+    role: "Air-gapped router & rewrite",
+  },
+  {
+    logo: "vllm",
+    name: "vLLM",
+    models: ["Self-hosted inference"],
+    status: "available",
+    role: "Self-hosted GPU cluster",
+  },
 ];

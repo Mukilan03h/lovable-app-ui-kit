@@ -4,17 +4,41 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowUp,
   BookOpen,
+  Bot,
+  Brain,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  Copy,
   FileText,
+  FolderOpen,
   GitBranch,
+  Globe,
   ListChecks,
+  Mic,
   MessageSquarePlus,
   Paperclip,
+  RotateCcw,
   Search,
   ShieldCheck,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+  Volume2,
   Wand2,
 } from "lucide-react";
+import { toast } from "sonner";
+import { BrandLogo } from "@/components/app/BrandLogo";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useTheme } from "@/lib/theme";
+import dunes from "@/assets/auth-dunes.jpg";
 import { Guard } from "@/components/app/Guard";
 import { ArtifactCanvas } from "@/components/app/ArtifactCanvas";
 import { artifactMeta } from "@/components/app/artifact-meta";
@@ -25,8 +49,10 @@ import {
   conversations,
   demoAnswer,
   docById,
+  agents,
+  modelProviders,
   sourceLabel,
-  sourceTint,
+  sourceLogo,
   suggestedPrompts,
   type ArtifactKind,
   type SourceApp,
@@ -34,6 +60,10 @@ import {
 } from "@/data/knowledge";
 
 export const Route = createFileRoute("/_app/assistant")({
+  validateSearch: (search: Record<string, unknown>): { artifact?: ArtifactKind } => {
+    const a = search["artifact"];
+    return a === "slides" || a === "doc" || a === "sheet" ? { artifact: a } : {};
+  },
   head: () => ({
     meta: [
       { title: "Assistant — Enaz Knowledge" },
@@ -85,6 +115,21 @@ const stepIcon: Record<Step["tool"], typeof Search> = {
   artifact: Wand2,
 };
 
+const efforts = ["Low", "Medium", "High"] as const;
+
+const projects = [
+  { name: "GA launch", files: 12 },
+  { name: "Globex renewal", files: 5 },
+];
+
+const bgClass: Record<string, string> = {
+  none: "",
+  aurora: "chat-bg-aurora",
+  grid: "chat-bg-grid",
+  dots: "chat-bg-dots",
+  dunes: "",
+};
+
 type Turn = { id: number; question: string; artifact: ArtifactKind | undefined };
 
 const detectArtifact = (q: string): ArtifactKind | undefined => {
@@ -101,7 +146,13 @@ function AssistantPage() {
   const [scope, setScope] = useState<SourceApp[]>([]);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [artifact, setArtifact] = useState<ArtifactKind | null>(null);
+  const { artifact: linkedArtifact } = Route.useSearch();
+  const { chatBackground } = useTheme();
+  const [artifact, setArtifact] = useState<ArtifactKind | null>(linkedArtifact ?? null);
+  const [agent, setAgent] = useState("Enaz Assistant");
+  const [model, setModel] = useState("Claude Sonnet 5.5");
+  const [effort, setEffort] = useState<(typeof efforts)[number]>("Medium");
+  const [web, setWeb] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   const send = (text: string, kind?: ArtifactKind) => {
@@ -110,6 +161,12 @@ function AssistantPage() {
     setTurns((t) => [...t, { id: Date.now(), question: q, artifact: kind ?? detectArtifact(q) }]);
     setInput("");
   };
+
+  useEffect(() => {
+    if (linkedArtifact) setArtifact(linkedArtifact);
+  }, [linkedArtifact]);
+
+  const contextUsed = Math.min(92, 6 + turns.length * 14);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -138,6 +195,27 @@ function AssistantPage() {
           <MessageSquarePlus className="size-4" /> New chat
         </button>
         <div className="min-h-0 flex-1 overflow-y-auto rounded-3xl border border-border bg-card p-2">
+          <label className="mb-2 flex items-center gap-2 rounded-xl bg-muted px-2 py-1.5">
+            <Search className="size-3.5 text-muted-foreground" />
+            <input
+              placeholder="Search chats"
+              className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+            />
+          </label>
+          <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Projects
+          </p>
+          {projects.map((p) => (
+            <button
+              key={p.name}
+              className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-sm hover:bg-muted"
+            >
+              <FolderOpen className="size-4 text-brand" />
+              <span className="min-w-0 flex-1 truncate">{p.name}</span>
+              <span className="text-[10px] text-muted-foreground">{p.files} files</span>
+            </button>
+          ))}
+          <div className="my-2 border-t border-border" />
           {["Today", "Yesterday", "Mon", "Last week"].map((group) => {
             const items = conversations.filter((c) => c.when === group);
             if (!items.length) return null;
@@ -166,8 +244,85 @@ function AssistantPage() {
         </div>
       </aside>
 
-      <section className="flex min-h-[70vh] min-w-0 flex-col rounded-3xl border border-border bg-card shadow-[var(--shadow-soft)] lg:min-h-0">
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+      <section className="relative flex min-h-[70vh] min-w-0 flex-col overflow-hidden rounded-3xl border border-border bg-card shadow-[var(--shadow-soft)] lg:min-h-0">
+        {chatBackground === "dunes" && (
+          <div
+            className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-20"
+            style={{ backgroundImage: `url(${dunes})` }}
+          />
+        )}
+        <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger className="flex items-center gap-2 rounded-xl px-2 py-1 text-sm font-semibold hover:bg-muted">
+              <span className="grid size-6 place-items-center rounded-lg bg-brand/12 text-brand">
+                <Bot className="size-3.5" />
+              </span>
+              {agent}
+              <ChevronDown className="size-3.5 text-muted-foreground" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-64">
+              <DropdownMenuLabel>Agents</DropdownMenuLabel>
+              {["Enaz Assistant", ...agents.map((a) => a.name)].map((name) => (
+                <DropdownMenuItem key={name} onClick={() => setAgent(name)}>
+                  <Bot className="size-4" />
+                  <span className="flex-1">{name}</span>
+                  {agent === name && <Check className="size-4 text-brand" />}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <div className="ml-auto flex items-center gap-2">
+            <ContextMeter used={contextUsed} />
+            <DropdownMenu>
+              <DropdownMenuTrigger className="flex items-center gap-1.5 rounded-xl border border-border px-2 py-1 text-xs font-medium hover:bg-muted">
+                <BrandLogo id={model.startsWith("Claude") ? "anthropic" : "ollama"} size="xs" />
+                <span className="hidden sm:inline">{model}</span>
+                <ChevronDown className="size-3 text-muted-foreground" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                {modelProviders
+                  .filter((p) => p.status === "connected")
+                  .map((p) => (
+                    <div key={p.name}>
+                      <DropdownMenuLabel className="flex items-center gap-2">
+                        <BrandLogo id={p.logo} size="xs" /> {p.name}
+                      </DropdownMenuLabel>
+                      {p.models.map((m) => (
+                        <DropdownMenuItem key={m} onClick={() => setModel(m)}>
+                          <span className="flex-1">{m}</span>
+                          {model === m && <Check className="size-4 text-brand" />}
+                        </DropdownMenuItem>
+                      ))}
+                    </div>
+                  ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="flex items-center gap-2">
+                  <Brain className="size-3.5" /> Reasoning effort
+                </DropdownMenuLabel>
+                <div className="flex gap-1 px-2 pb-2">
+                  {efforts.map((e) => (
+                    <button
+                      key={e}
+                      onClick={() => setEffort(e)}
+                      className={cn(
+                        "flex-1 rounded-lg px-2 py-1 text-xs",
+                        effort === e ? "bg-primary text-primary-foreground" : "bg-muted",
+                      )}
+                    >
+                      {e}
+                    </button>
+                  ))}
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+        <div
+          className={cn(
+            "relative min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6",
+            bgClass[chatBackground],
+          )}
+        >
           {turns.length === 0 ? (
             <Welcome name={user?.name.split(" ")[0] ?? "there"} onPick={(t, k) => send(t, k)} />
           ) : (
@@ -232,24 +387,48 @@ function AssistantPage() {
                 >
                   <Paperclip className="size-4 text-muted-foreground" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setWeb((w) => !w)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                    web
+                      ? "border-brand bg-brand/12 text-brand"
+                      : "border-border text-muted-foreground",
+                  )}
+                >
+                  <Globe className="size-3" /> Web
+                </button>
                 {scopeSources.map((s) => (
                   <button
                     key={s}
                     type="button"
                     onClick={() => toggleScope(s)}
+                    title={sourceLabel[s]}
                     className={cn(
-                      "rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                      "inline-flex items-center gap-1.5 rounded-full border py-0.5 pl-0.5 pr-2.5 text-[11px] font-medium",
                       scope.includes(s)
                         ? "border-brand bg-brand/12 text-brand"
                         : "border-border text-muted-foreground",
                     )}
                   >
-                    {sourceLabel[s]}
+                    <BrandLogo id={sourceLogo[s]} size="xs" className="rounded-full" />
+                    <span className="hidden sm:inline">{sourceLabel[s]}</span>
                   </button>
                 ))}
                 <span className="ml-auto text-[11px] text-muted-foreground">
                   {scope.length ? `${scope.length} sources` : "All sources"}
                 </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    toast("Listening…", { description: "Voice input with live transcription" })
+                  }
+                  className="grid size-8 place-items-center rounded-xl hover:bg-muted"
+                  aria-label="Voice input"
+                >
+                  <Mic className="size-4 text-muted-foreground" />
+                </button>
                 <button
                   disabled={!input.trim()}
                   className="grid size-8 place-items-center rounded-xl bg-primary text-primary-foreground disabled:opacity-40"
@@ -424,12 +603,8 @@ function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: Artifact
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] font-bold text-brand">{i + 1}</span>
-                    <span
-                      className={cn(
-                        "rounded-md px-1.5 py-0.5 text-[10px] font-semibold",
-                        sourceTint[d.source],
-                      )}
-                    >
+                    <BrandLogo id={sourceLogo[d.source]} size="xs" />
+                    <span className="text-[11px] font-medium text-muted-foreground">
                       {sourceLabel[d.source]}
                     </span>
                     <span className="ml-auto text-[10px] text-muted-foreground">{d.updated}</span>
@@ -461,8 +636,84 @@ function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: Artifact
               <FileText className="size-3.5" /> Copy with citations
             </button>
           </div>
+          <MessageToolbar />
         </motion.div>
       )}
     </div>
+  );
+}
+
+function MessageToolbar() {
+  const [vote, setVote] = useState<"up" | "down" | null>(null);
+  const actions = [
+    {
+      label: "Good response",
+      icon: ThumbsUp,
+      active: vote === "up",
+      run: () => setVote(vote === "up" ? null : "up"),
+    },
+    {
+      label: "Bad response",
+      icon: ThumbsDown,
+      active: vote === "down",
+      run: () => {
+        setVote(vote === "down" ? null : "down");
+        if (vote !== "down") toast("Thanks — feedback goes to the quality dashboard");
+      },
+    },
+    { label: "Copy", icon: Copy, active: false, run: () => toast("Copied answer") },
+    { label: "Read aloud", icon: Volume2, active: false, run: () => toast("Reading aloud…") },
+    {
+      label: "Retry with another model",
+      icon: RotateCcw,
+      active: false,
+      run: () => toast("Regenerating…"),
+    },
+  ];
+  return (
+    <div className="flex items-center gap-0.5 text-muted-foreground">
+      {actions.map((a) => (
+        <button
+          key={a.label}
+          title={a.label}
+          aria-label={a.label}
+          onClick={a.run}
+          className={cn(
+            "grid size-8 place-items-center rounded-lg hover:bg-muted hover:text-foreground",
+            a.active && "text-brand",
+          )}
+        >
+          <a.icon className="size-4" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Ring showing how much of the context window the conversation uses. */
+function ContextMeter({ used }: { used: number }) {
+  const r = 7;
+  const c = 2 * Math.PI * r;
+  return (
+    <span
+      title={`Context ${used}% used — older turns are compacted automatically`}
+      className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+    >
+      <svg viewBox="0 0 18 18" className="size-4 -rotate-90">
+        <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border)" strokeWidth="2.5" />
+        <motion.circle
+          cx="9"
+          cy="9"
+          r={r}
+          fill="none"
+          stroke={used > 80 ? "var(--warning)" : "var(--brand)"}
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          animate={{ strokeDashoffset: c - (c * used) / 100 }}
+        />
+      </svg>
+      <span className="hidden md:inline">{used}%</span>
+    </span>
   );
 }

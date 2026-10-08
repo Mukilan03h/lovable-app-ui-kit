@@ -9,6 +9,7 @@ export type Permission =
   | "agents"
   | "artifacts"
   | "insights"
+  | "admin"
   | "dashboard"
   | "projects"
   | "tasks"
@@ -31,6 +32,7 @@ const rolePermissions: Record<Role, Permission[]> = {
     "agents",
     "artifacts",
     "insights",
+    "admin",
     "dashboard",
     "projects",
     "tasks",
@@ -64,7 +66,7 @@ const rolePermissions: Record<Role, Permission[]> = {
     "finance:manage",
   ],
   member: ["assistant", "search", "agents", "artifacts", "dashboard", "projects", "tasks", "calendar", "time", "notifications", "settings"],
-  client: ["assistant", "search", "artifacts", "dashboard", "projects", "invoices", "notifications"],
+  client: ["assistant", "search", "artifacts", "settings", "dashboard", "projects", "invoices", "notifications"],
 };
 
 export const roleLabel: Record<Role, string> = {

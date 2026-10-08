@@ -6,7 +6,8 @@ import { Guard } from "@/components/app/Guard";
 import { Avatar, Panel, PageHeader } from "@/components/app/ui-bits";
 import { PageTransition, StaggerGroup } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { docs, sourceLabel, sourceTint, type Doc, type SourceApp } from "@/data/knowledge";
+import { BrandLogo } from "@/components/app/BrandLogo";
+import { docs, sourceLabel, sourceLogo, type Doc, type SourceApp } from "@/data/knowledge";
 
 export const Route = createFileRoute("/_app/search")({
   validateSearch: (search: Record<string, unknown>): { q?: string } =>
@@ -103,7 +104,16 @@ function SearchPage() {
             value={source}
             onChange={setSource}
             options={["all", ...sources]}
-            label={(s) => (s === "all" ? "All sources" : sourceLabel[s as SourceApp])}
+            label={(s) =>
+              s === "all" ? (
+                "All sources"
+              ) : (
+                <>
+                  <BrandLogo id={sourceLogo[s as SourceApp]} size="xs" />
+                  {sourceLabel[s as SourceApp]}
+                </>
+              )
+            }
           />
           <Facet
             title="Type"
@@ -146,11 +156,8 @@ function SearchPage() {
                 className="rounded-3xl border border-border bg-card p-4 shadow-[var(--shadow-soft)]"
               >
                 <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span
-                    className={cn("rounded-md px-1.5 py-0.5 font-semibold", sourceTint[d.source])}
-                  >
-                    {sourceLabel[d.source]}
-                  </span>
+                  <BrandLogo id={sourceLogo[d.source]} size="xs" />
+                  <span className="font-semibold">{sourceLabel[d.source]}</span>
                   <span className="truncate text-muted-foreground">{d.path}</span>
                   <span className="ml-auto text-muted-foreground">{d.updated}</span>
                 </div>
@@ -211,7 +218,7 @@ function Facet<T extends string>({
   value: T;
   onChange: (v: T) => void;
   options: T[];
-  label: (v: T) => string;
+  label: (v: T) => React.ReactNode;
 }) {
   return (
     <div>
@@ -224,7 +231,7 @@ function Facet<T extends string>({
             key={o}
             onClick={() => onChange(o)}
             className={cn(
-              "rounded-xl px-3 py-1.5 text-left text-sm",
+              "flex items-center gap-2 rounded-xl px-3 py-1.5 text-left text-sm",
               value === o
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:bg-muted",

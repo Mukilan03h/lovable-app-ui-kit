@@ -16,14 +16,19 @@
    index plus an enterprise graph**, with the LLM using search as a *tool* it can call many times,
    in parallel, and verify. RAG is a component; the agent loop is the architecture.
 2. **Win where both competitors are weak:**
-   - *Onyx*: strong open-source core, but heavy multi-service self-hosting, uneven admin UX, key
-     enterprise features (permission sync, SSO extras) gated behind the paid edition, and generic
-     chat output.
+   - *Onyx*: a very complete open-source product (verified from source, section 1.5): 60+ connectors,
+     agentic RAG, deep research, **Craft** (sandboxed builder for web apps, docs and PPTX), skills,
+     projects, memory, voice, MCP server, bots. Its weak points: permission sync for 17 sources,
+     groups, SCIM, white-labelling, analytics and query history sit in the paid `ee/` edition;
+     Standard mode is a heavy multi-service stack; Craft is a separate mode, not part of everyday
+     chat answers.
    - *Glean*: best-in-class graph and connectors, but expensive, closed, slow to deploy, hard to
      self-host / air-gap, and document *creation* is shallow compared to Claude-style artifacts.
-3. **Our wedge = "Search → Answer → Deliverable."** Every answer can become a cited, editable,
-   versioned artifact: PPTX, DOCX, XLSX, PDF, HTML dashboards — generated from a typed spec and
-   rendered deterministically, so the files are clean and editable in Office.
+3. **Our wedge = "Search → Answer → Deliverable", inside every chat.** Every answer can become a
+   cited, editable, versioned artifact (PPTX, DOCX, XLSX with live formulas, PDF, HTML) generated
+   from a typed spec and rendered deterministically, with per-claim verification. Onyx Craft proves
+   demand for this; we make it part of everyday chat, add claim verification and brand templates,
+   and make it cheaper to run.
 4. **Efficiency is a feature:** single-binary/compose-light deployment, model routing (small model
    for 80% of calls), aggressive caching, incremental indexing, and context-management techniques
    (compaction, memory, sub-agents, tool-result clearing) to cut cost per answer 3–5× vs naive RAG.
@@ -37,15 +42,22 @@
 
 ### 1.1 Onyx (onyx.app, github.com/onyx-dot-app/onyx)
 
-| Area | What they do | Weakness we can exploit |
+> Corrected after reading the repository itself (commit `939aa52`, Oct 2026). An earlier draft of
+> this plan, based only on web summaries, wrongly said Onyx outputs only chat text and runs on Vespa.
+
+| Area | What they do (verified in code) | Weakness we can exploit |
 | --- | --- | --- |
-| Licensing | MIT core, paid Enterprise Edition | Teams discover permission sync / advanced SSO are not in the free edition |
-| Connectors | 40+ (Drive, SharePoint, Slack, Confluence, Jira, GitHub, …) | Polling-heavy; freshness varies by connector; per-connector quality uneven |
-| Search core | Hybrid (keyword + vector) on Vespa, cross-encoder rerank, Postgres for metadata, Celery workers, separate model server | Many moving parts (Vespa, Postgres, Redis, model server, background workers, web) → hard to operate, heavy RAM |
-| Chat / agents | Custom agents with prompts, knowledge sets, actions (MCP, OpenAPI), web search, code interpreter, image gen | Agents are config-centric; little evaluation tooling; no process/workflow memory |
-| Deep research | Multi-step research with parallel tool calls | Output is a long chat message, not a structured, editable deliverable |
-| Deployment | Docker, Kubernetes, Terraform, air-gapped, any LLM incl. local | Ops complexity; reviewers cite uneven index visibility for admins |
-| UX | Clean ChatGPT-like chat | Weak "work product" UX, limited analytics, limited personalization |
+| Licensing | MIT outside `ee/` folders; `ee/` = Onyx Enterprise License | Permission sync (`backend/ee/onyx/external_permissions`: Drive, Gmail, Slack, Confluence, Jira, SharePoint, Teams, Salesforce, GitHub, Box, OneDrive, Outlook, Zoom, Canvas…) is **not** in the MIT core |
+| Tiers | Admin routes gated by tier: LLM Gateway, Service Accounts, Groups, Appearance & Theming, Usage, Analytics, Query History (Business); Custom Analytics, Hook Extensions, SCIM, Export Logs (Enterprise) | We include ACL sync, groups, SCIM and branding in self-host |
+| Connectors | 76 connector modules; 60+ user-facing sources in 8 categories, with brand logos; **federated** (search-at-query-time) connectors | Freshness varies (many poll); we push event-driven sync + freshness SLA |
+| Search core | Hybrid index on **OpenSearch** (vector quantization benchmarks in repo), contextual chunk enrichment, Postgres, Redis, MinIO, model servers, background workers | Standard mode is heavy; **Lite** mode (<1 GB) drops indexing entirely |
+| Agentic RAG & research | Custom agent harness for retrieval; deep research with parallel tools; knowledge-graph module (`backend/onyx/kg`) | Graph is not a user-facing, editable product surface |
+| Craft | Sandboxed coding agent (OpenCode) building Next.js apps, markdown docs with DOCX export, PPTX/PDF/image previews, file tree, tool cards, sub-agents, context ring, compaction marker, approvals, scheduled runs, skills | Separate mode with Docker-socket sandbox setup; output is code/files, not spec-based Office documents; no per-claim verification |
+| Chat | Agents, projects (folders + context files), model selector, multi-model side-by-side, regenerate with another model, like/dislike, TTS, voice input, message editing, shared chats, prompt shortcuts, chat backgrounds | Strong — parity needed |
+| Personal settings | Profile & work role, light/dark/auto, chat background, language (9 locales), default mode (chat/search), default model, reasoning level, temperature, auto-scroll, smooth streaming, collapse large pastes, personal instructions, memory, prompt shortcuts, voice, connected accounts, API tokens, LLM gateway, danger zone | No accent colors/text size; memory is less transparent |
+| Admin | LLMs, web search (Serper, Google PSE, Brave, SearXNG, Exa, Firecrawl), image gen, voice, code interpreter, chat prefs, MCP & OpenAPI actions, document sets, index settings, indexing status, standard answers, Slack & Discord bots, users, groups, SCIM, SSO, security, billing, analytics, query history, tracing, token rate limits, cost overrides | No routing/cost-per-task controls; no built-in eval gate in the UI (evals exist as a CLI) |
+| Distribution | Web, desktop, mobile, Chrome extension, embeddable widget, Slack/Discord bots, MCP server, Terraform provider, CLI | Teams bot not first-class |
+| i18n | ar, de, en, es, fr, ja, ko, pt, zh | No Indic languages — opportunity for India/APAC |
 
 ### 1.2 Glean (glean.com)
 
@@ -64,8 +76,10 @@ citations on every claim; Slack/Teams bot; browser extension; admin analytics; a
 SOC 2 path.
 
 ### 1.4 Where we beat both (differentiators)
-1. **Artifacts engine** – PPTX/DOCX/XLSX/PDF/HTML output with citations embedded, versioning,
-   "edit by instruction", brand templates, round-trip editing of uploaded Office files.
+1. **Artifacts engine in every chat** – PPTX/DOCX/XLSX/PDF/HTML from a typed spec, with citations
+   embedded, per-claim verification, live Excel formulas, versioning, "edit by instruction" as JSON
+   patches, brand templates, round-trip editing of uploaded Office files. (Onyx Craft covers apps and
+   docs in a separate sandboxed mode; Glean Canvas covers docs only.)
 2. **Transparent agentic research** – visible plan, live step timeline, per-claim citation with
    highlight, confidence score, "what I could not find" section.
 3. **Open, inspectable enterprise graph** – admins and users can see/correct entities,
@@ -77,8 +91,30 @@ SOC 2 path.
 6. **Knowledge-gap analytics** – shows which questions failed and which docs are stale,
    duplicate or contradictory, with one-click "assign owner to fix".
 7. **Workflows with memory** – agents learn team-specific procedures (approved memory, not silent).
-8. **Fair pricing + free self-host with permission sync included** – removes Onyx's biggest
-   adoption trap.
+8. **Fair pricing + free self-host with permission sync, groups, SCIM and branding included** –
+   these are all paid in Onyx (`ee/` license / Business-Enterprise tiers).
+9. **Routing & cost console + eval gate in the UI** – per-task model routing, budgets, semantic cache
+   and a golden-set quality gate that blocks regressions (Admin → Model routing, Evaluations).
+10. **Personalization depth** – accent colors, text size, reduced motion, transparent editable
+   memory, notifications, personal MCP endpoint and tokens; Indic languages (Tamil, Hindi) at launch.
+
+### 1.5 Onyx parity checklist (from the repo) → status in this UI
+
+| Onyx feature | This prototype |
+| --- | --- |
+| Connector catalogue with logos & categories | ✅ `/connectors` (41 entries, 8 categories, logos, live-search sources) |
+| Agents gallery & builder | ✅ `/agents` (builder is next) |
+| Agent / model selector, reasoning level | ✅ Assistant header |
+| Projects with files | ✅ Assistant sidebar (UI) |
+| Like / dislike / regenerate / copy / TTS / voice input | ✅ Assistant |
+| Context usage ring | ✅ Assistant header |
+| Artifacts with file-type icons, previews, files tab | ✅ `/artifacts` + canvas (Preview / Sources / Versions) |
+| Settings: profile, appearance, chat, memory, shortcuts, voice, accounts, tokens, danger zone | ✅ `/settings` (+ accent, text size, reduce motion, notifications, MCP URL) |
+| Admin: models, web search, image, voice, sandbox, index, indexing, doc sets, standard answers, MCP/OpenAPI, bots, users, groups, SSO/SCIM, branding, security, billing, history, tracing | ✅ `/admin` (+ routing & cost, enterprise graph, evaluations) |
+| Multi-model side-by-side answers | ⏳ next |
+| Shared chats, message editing | ⏳ next |
+| Craft-style sandboxed web-app builder | ⏳ Phase 2 (HTML artifact type) |
+| i18n | ⏳ language picker in place; strings not extracted yet |
 
 ---
 
@@ -277,7 +313,7 @@ Learn-to-rank weights from click/feedback data once there is traffic.
 | Scale | Recommended | Why |
 | --- | --- | --- |
 | ≤ 5M chunks (most SMB/mid-market, all self-host trials) | **Postgres + pgvector (HNSW/halfvec) + Postgres full-text/BM25 extension (e.g. ParadeDB pg_search)** | One database to operate; transactional ACL updates; cheap |
-| 5M – 500M chunks | **Vespa** or **OpenSearch** (hybrid, filtering, multi-vector) | Proven at scale; Vespa handles hybrid + rerank + multi-vector natively (Onyx also uses it) |
+| 5M – 500M chunks | **Vespa** or **OpenSearch** (hybrid, filtering, multi-vector) | Proven at scale; Vespa handles hybrid + rerank + multi-vector natively; Onyx moved to OpenSearch |
 | Visual index | Multi-vector store (Vespa tensors, or Qdrant multivector) | Late-interaction page retrieval |
 
 Abstract this behind a `RetrievalBackend` interface so we can start small and migrate.
@@ -373,6 +409,8 @@ motion, responsive, role-based guards):
 | `/agents` | Agent gallery, triggers, tools, run stats; builder entry point | Prototype |
 | `/artifacts` | Library of generated files with type filters, versions, sources | Prototype |
 | `/insights` | Admin analytics: queries, answer rate, cost, latency, knowledge gaps | Prototype |
+| `/settings` | Personal settings: profile, appearance (Light/Dark/System, 6 accents, text size, chat backgrounds, reduce motion), chat defaults, memory, prompt shortcuts, voice, notifications, connected accounts, tokens & MCP, danger zone | Prototype |
+| `/admin` | Admin console with 30 panels in 7 groups (AI & Models, Knowledge, Agents & Actions, Integrations, People & Access, Organization, Usage) | Prototype |
 | `/dashboard`, `/projects`, `/tasks` | Legacy tracker pages kept (not in nav) as reference components | Legacy |
 
 Roles mapping: `admin` = Admin, `manager` = Curator (manages connectors' scopes/agents, sees insights),
@@ -414,6 +452,11 @@ security advisor part-time.
 
 ## 14. Sources
 
+- Onyx source code: [github.com/onyx-dot-app/onyx](https://github.com/onyx-dot-app/onyx) (read at commit `939aa52`:
+  `README.md`, `web/src/lib/admin-routes.ts`, `web/src/lib/sources.ts`, `web/src/views/SettingsPage.tsx`,
+  `web/src/app/craft/`, `web/src/i18n/messages/en.json`, `backend/ee/onyx/external_permissions/`, `LICENSE`)
+- Connector & provider logos in the UI: [simple-icons](https://simpleicons.org) v16.34.0 (CC0); brands it lacks use
+  initials tiles. Trademarks belong to their owners.
 - Onyx overview & features: [Elest.io review](https://blog.elest.io/onyx-free-open-source-ai-platform-with-connectors-agents-knowledge-base/),
   [Onyx — Glean alternatives](https://onyx.app/insights/glean-alternatives),
   [rfp.wiki Onyx review](https://www.rfp.wiki/vendors/onyx),
