@@ -7,9 +7,9 @@ import { AuthLayout, Field } from "@/components/app/AuthLayout";
 export const Route = createFileRoute("/forgot-password")({
   head: () => ({
     meta: [
-      { title: "Reset password — Enaz Project Tracker" },
+      { title: "Reset password — Enaz Knowledge" },
       { name: "description", content: "Request a reset link for your Enaz workspace account." },
-      { property: "og:title", content: "Reset password — Enaz Project Tracker" },
+      { property: "og:title", content: "Reset password — Enaz Knowledge" },
       { property: "og:description", content: "Request a reset link for your Enaz account." },
     ],
   }),

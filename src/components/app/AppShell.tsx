@@ -1,15 +1,12 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { useState, type ReactNode } from "react";
-import { Menu, Moon, Search, Sun, X, LogOut, Bell } from "lucide-react";
+import { Menu, Moon, Search, Sun, X, LogOut } from "lucide-react";
 import { navItems } from "./nav";
 import { useAuth, roleLabel } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { Avatar } from "./ui-bits";
-import { notifications } from "@/data/mock";
-
-const filters = ["Today", "This Week", "This Month", "Reports"];
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, signOut, can } = useAuth();
@@ -17,10 +14,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [activeFilter, setActiveFilter] = useState("This Month");
+  const [query, setQuery] = useState("");
 
   const items = navItems.filter((i) => can(i.permission));
-  const unread = notifications.filter((n) => !n.read).length;
 
   const handleSignOut = () => {
     signOut();
@@ -30,7 +26,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const Rail = ({ onNavigate }: { onNavigate?: () => void }) => (
     <nav className="flex h-full flex-col items-center gap-1 py-4">
       <Link
-        to="/dashboard"
+        to="/assistant"
         onClick={onNavigate}
         className="mb-3 grid size-10 place-items-center rounded-2xl bg-primary text-primary-foreground"
         aria-label="Enaz home"
@@ -126,49 +122,27 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Menu className="size-4" />
             </button>
             <span className="text-xl font-bold tracking-tight">enaz</span>
-
-            <div className="order-last flex w-full items-center gap-1 overflow-x-auto rounded-full bg-muted p-1 sm:order-none sm:mx-auto sm:w-auto">
-              {filters.map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setActiveFilter(f)}
-                  className={cn(
-                    "relative shrink-0 rounded-full px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors",
-                    activeFilter === f && "text-primary-foreground",
-                  )}
-                >
-                  {activeFilter === f && (
-                    <motion.span
-                      layoutId="filter-pill"
-                      className="absolute inset-0 rounded-full bg-primary"
-                      transition={{ type: "spring", stiffness: 420, damping: 34 }}
-                    />
-                  )}
-                  <span className="relative">{f}</span>
-                </button>
-              ))}
-            </div>
+            <span className="hidden rounded-full bg-brand/12 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand sm:inline">
+              Knowledge
+            </span>
 
             <div className="ml-auto flex items-center gap-2">
-              <label className="hidden items-center gap-2 rounded-full border border-border bg-card px-3 py-2 md:flex">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  navigate({ to: "/search", search: { q: query } });
+                }}
+                className="hidden items-center gap-2 rounded-full border border-border bg-card px-3 py-2 md:flex"
+              >
                 <Search className="size-4 text-muted-foreground" />
                 <input
-                  placeholder="Search tasks, projects"
-                  className="w-40 bg-transparent text-sm outline-none placeholder:text-muted-foreground xl:w-56"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search all company knowledge"
+                  className="w-48 bg-transparent text-sm outline-none placeholder:text-muted-foreground xl:w-72"
                 />
-              </label>
-              <Link
-                to="/notifications"
-                className="relative grid size-9 place-items-center rounded-xl border border-border"
-                aria-label="Notifications"
-              >
-                <Bell className="size-4" />
-                {unread > 0 && (
-                  <span className="absolute -right-1 -top-1 grid size-4 place-items-center rounded-full bg-destructive text-[10px] font-bold text-destructive-foreground">
-                    {unread}
-                  </span>
-                )}
-              </Link>
+                <kbd className="hidden rounded-md border border-border px-1.5 text-[10px] text-muted-foreground xl:inline">⏎</kbd>
+              </form>
               <button
                 onClick={toggle}
                 className="grid size-9 place-items-center rounded-xl border border-border"

@@ -2,6 +2,10 @@
 
 See i need this project tracker application UI to be replicated as it is with login pages as i gave sample where i need to have in both dark and light modes and framer animations as well with mock data as of now but i need as many modules graphs and every rolebased access pages with responsiveness in all screens
 
+> **Now: Enaz Knowledge** — the UI kit has been repurposed into an enterprise search & AI work platform
+> (Assistant with artifacts canvas, Search, Artifacts, Agents, Connectors, Insights). The full competitive
+> analysis (Onyx, Glean), retrieval research, architecture, models and roadmap is in [docs/PLAN.md](docs/PLAN.md).
+
 This project was built with [Lovable](https://lovable.dev).
 
 ## Build with Lovable

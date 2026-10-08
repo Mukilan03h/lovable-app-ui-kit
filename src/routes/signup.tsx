@@ -6,9 +6,9 @@ import { useAuth } from "@/lib/auth";
 export const Route = createFileRoute("/signup")({
   head: () => ({
     meta: [
-      { title: "Create account — Enaz Project Tracker" },
-      { name: "description", content: "Create your Enaz workspace and start tracking projects today." },
-      { property: "og:title", content: "Create account — Enaz Project Tracker" },
+      { title: "Create account — Enaz Knowledge" },
+      { name: "description", content: "Create your Enaz workspace and search all your company knowledge." },
+      { property: "og:title", content: "Create account — Enaz Knowledge" },
       { property: "og:description", content: "Create your Enaz workspace in under a minute." },
     ],
   }),
@@ -30,7 +30,7 @@ function SignUp() {
         onSubmit={(e) => {
           e.preventDefault();
           signIn("admin");
-          navigate({ to: "/dashboard" });
+          navigate({ to: "/assistant" });
         }}
       >
         <div className="grid gap-5 sm:grid-cols-2">

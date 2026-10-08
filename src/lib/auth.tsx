@@ -2,6 +2,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { members, type Member, type Role } from "@/data/mock";
 
 export type Permission =
+  | "assistant"
+  | "search"
+  | "connectors"
+  | "connectors:manage"
+  | "agents"
+  | "artifacts"
+  | "insights"
   | "dashboard"
   | "projects"
   | "tasks"
@@ -17,6 +24,13 @@ export type Permission =
 
 const rolePermissions: Record<Role, Permission[]> = {
   admin: [
+    "assistant",
+    "search",
+    "connectors",
+    "connectors:manage",
+    "agents",
+    "artifacts",
+    "insights",
     "dashboard",
     "projects",
     "tasks",
@@ -31,6 +45,12 @@ const rolePermissions: Record<Role, Permission[]> = {
     "finance:manage",
   ],
   manager: [
+    "assistant",
+    "search",
+    "connectors",
+    "agents",
+    "artifacts",
+    "insights",
     "dashboard",
     "projects",
     "tasks",
@@ -43,15 +63,15 @@ const rolePermissions: Record<Role, Permission[]> = {
     "settings",
     "finance:manage",
   ],
-  member: ["dashboard", "projects", "tasks", "calendar", "time", "notifications", "settings"],
-  client: ["dashboard", "projects", "invoices", "notifications"],
+  member: ["assistant", "search", "agents", "artifacts", "dashboard", "projects", "tasks", "calendar", "time", "notifications", "settings"],
+  client: ["assistant", "search", "artifacts", "dashboard", "projects", "invoices", "notifications"],
 };
 
 export const roleLabel: Record<Role, string> = {
   admin: "Admin",
-  manager: "Manager",
+  manager: "Curator",
   member: "Member",
-  client: "Client",
+  client: "Guest",
 };
 
 type AuthValue = {

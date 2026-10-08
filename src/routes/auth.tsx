@@ -9,10 +9,10 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
-      { title: "Sign in — Enaz Project Tracker" },
+      { title: "Sign in — Enaz Knowledge" },
       { name: "description", content: "Sign in to your Enaz workspace and pick a role to preview." },
-      { property: "og:title", content: "Sign in — Enaz Project Tracker" },
-      { property: "og:description", content: "Sign in to your Enaz project tracking workspace." },
+      { property: "og:title", content: "Sign in — Enaz Knowledge" },
+      { property: "og:description", content: "Sign in to your Enaz knowledge workspace." },
     ],
   }),
   component: SignIn,
@@ -26,7 +26,7 @@ function SignIn() {
   const [role, setRole] = useState<Role>("admin");
 
   useEffect(() => {
-    if (ready && user) navigate({ to: "/dashboard", replace: true });
+    if (ready && user) navigate({ to: "/assistant", replace: true });
   }, [ready, user, navigate]);
 
   return (
@@ -36,7 +36,7 @@ function SignIn() {
         onSubmit={(e) => {
           e.preventDefault();
           signIn(role);
-          navigate({ to: "/dashboard" });
+          navigate({ to: "/assistant" });
         }}
       >
         <Field label="Email" type="email" defaultValue="alina@enaz.studio" />

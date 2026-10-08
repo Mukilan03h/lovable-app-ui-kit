@@ -14,7 +14,13 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as SignupRouteImport } from './routes/signup'
+import { Route as AppAgentsRouteImport } from './routes/_app.agents'
+import { Route as AppArtifactsRouteImport } from './routes/_app.artifacts'
+import { Route as AppAssistantRouteImport } from './routes/_app.assistant'
+import { Route as AppConnectorsRouteImport } from './routes/_app.connectors'
 import { Route as AppDashboardRouteImport } from './routes/_app.dashboard'
+import { Route as AppInsightsRouteImport } from './routes/_app.insights'
+import { Route as AppSearchRouteImport } from './routes/_app.search'
 import { Route as AppTasksRouteImport } from './routes/_app.tasks'
 import { Route as AppProjectsIndexRouteImport } from './routes/_app.projects.index'
 import { Route as AppProjectsIdRouteImport } from './routes/_app.projects.$id'
@@ -43,9 +49,39 @@ const SignupRoute = SignupRouteImport.update({
   path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppAgentsRoute = AppAgentsRouteImport.update({
+  id: '/agents',
+  path: '/agents',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppArtifactsRoute = AppArtifactsRouteImport.update({
+  id: '/artifacts',
+  path: '/artifacts',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAssistantRoute = AppAssistantRouteImport.update({
+  id: '/assistant',
+  path: '/assistant',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppConnectorsRoute = AppConnectorsRouteImport.update({
+  id: '/connectors',
+  path: '/connectors',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppDashboardRoute = AppDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppInsightsRoute = AppInsightsRouteImport.update({
+  id: '/insights',
+  path: '/insights',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSearchRoute = AppSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
   getParentRoute: () => AppRoute,
 } as any)
 const AppTasksRoute = AppTasksRouteImport.update({
@@ -69,7 +105,13 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/signup': typeof SignupRoute
+  '/agents': typeof AppAgentsRoute
+  '/artifacts': typeof AppArtifactsRoute
+  '/assistant': typeof AppAssistantRoute
+  '/connectors': typeof AppConnectorsRoute
   '/dashboard': typeof AppDashboardRoute
+  '/insights': typeof AppInsightsRoute
+  '/search': typeof AppSearchRoute
   '/tasks': typeof AppTasksRoute
   '/projects/$id': typeof AppProjectsIdRoute
   '/projects/': typeof AppProjectsIndexRoute
@@ -79,7 +121,13 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/signup': typeof SignupRoute
+  '/agents': typeof AppAgentsRoute
+  '/artifacts': typeof AppArtifactsRoute
+  '/assistant': typeof AppAssistantRoute
+  '/connectors': typeof AppConnectorsRoute
   '/dashboard': typeof AppDashboardRoute
+  '/insights': typeof AppInsightsRoute
+  '/search': typeof AppSearchRoute
   '/tasks': typeof AppTasksRoute
   '/projects/$id': typeof AppProjectsIdRoute
   '/projects': typeof AppProjectsIndexRoute
@@ -91,7 +139,13 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/signup': typeof SignupRoute
+  '/_app/agents': typeof AppAgentsRoute
+  '/_app/artifacts': typeof AppArtifactsRoute
+  '/_app/assistant': typeof AppAssistantRoute
+  '/_app/connectors': typeof AppConnectorsRoute
   '/_app/dashboard': typeof AppDashboardRoute
+  '/_app/insights': typeof AppInsightsRoute
+  '/_app/search': typeof AppSearchRoute
   '/_app/tasks': typeof AppTasksRoute
   '/_app/projects/$id': typeof AppProjectsIdRoute
   '/_app/projects/': typeof AppProjectsIndexRoute
@@ -103,7 +157,13 @@ export interface FileRouteTypes {
     | '/auth'
     | '/forgot-password'
     | '/signup'
+    | '/agents'
+    | '/artifacts'
+    | '/assistant'
+    | '/connectors'
     | '/dashboard'
+    | '/insights'
+    | '/search'
     | '/tasks'
     | '/projects/$id'
     | '/projects/'
@@ -113,7 +173,13 @@ export interface FileRouteTypes {
     | '/auth'
     | '/forgot-password'
     | '/signup'
+    | '/agents'
+    | '/artifacts'
+    | '/assistant'
+    | '/connectors'
     | '/dashboard'
+    | '/insights'
+    | '/search'
     | '/tasks'
     | '/projects/$id'
     | '/projects'
@@ -124,7 +190,13 @@ export interface FileRouteTypes {
     | '/auth'
     | '/forgot-password'
     | '/signup'
+    | '/_app/agents'
+    | '/_app/artifacts'
+    | '/_app/assistant'
+    | '/_app/connectors'
     | '/_app/dashboard'
+    | '/_app/insights'
+    | '/_app/search'
     | '/_app/tasks'
     | '/_app/projects/$id'
     | '/_app/projects/'
@@ -175,11 +247,53 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/agents': {
+      id: '/_app/agents'
+      path: '/agents'
+      fullPath: '/agents'
+      preLoaderRoute: typeof AppAgentsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/artifacts': {
+      id: '/_app/artifacts'
+      path: '/artifacts'
+      fullPath: '/artifacts'
+      preLoaderRoute: typeof AppArtifactsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/assistant': {
+      id: '/_app/assistant'
+      path: '/assistant'
+      fullPath: '/assistant'
+      preLoaderRoute: typeof AppAssistantRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/connectors': {
+      id: '/_app/connectors'
+      path: '/connectors'
+      fullPath: '/connectors'
+      preLoaderRoute: typeof AppConnectorsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/dashboard': {
       id: '/_app/dashboard'
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof AppDashboardRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/insights': {
+      id: '/_app/insights'
+      path: '/insights'
+      fullPath: '/insights'
+      preLoaderRoute: typeof AppInsightsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/search': {
+      id: '/_app/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof AppSearchRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/tasks': {
@@ -207,14 +321,26 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppAgentsRoute: typeof AppAgentsRoute
+  AppArtifactsRoute: typeof AppArtifactsRoute
+  AppAssistantRoute: typeof AppAssistantRoute
+  AppConnectorsRoute: typeof AppConnectorsRoute
   AppDashboardRoute: typeof AppDashboardRoute
+  AppInsightsRoute: typeof AppInsightsRoute
+  AppSearchRoute: typeof AppSearchRoute
   AppTasksRoute: typeof AppTasksRoute
   AppProjectsIdRoute: typeof AppProjectsIdRoute
   AppProjectsIndexRoute: typeof AppProjectsIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppAgentsRoute: AppAgentsRoute,
+  AppArtifactsRoute: AppArtifactsRoute,
+  AppAssistantRoute: AppAssistantRoute,
+  AppConnectorsRoute: AppConnectorsRoute,
   AppDashboardRoute: AppDashboardRoute,
+  AppInsightsRoute: AppInsightsRoute,
+  AppSearchRoute: AppSearchRoute,
   AppTasksRoute: AppTasksRoute,
   AppProjectsIdRoute: AppProjectsIdRoute,
   AppProjectsIndexRoute: AppProjectsIndexRoute,

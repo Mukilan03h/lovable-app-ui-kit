@@ -5,16 +5,16 @@ import { useAuth } from "@/lib/auth";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Enaz — Project Tracker Workspace" },
+      { title: "Enaz — Enterprise Knowledge Assistant" },
       {
         name: "description",
         content:
-          "Enaz is a project tracker for teams: dashboards, tasks, invoices, time tracking and reports.",
+          "Enaz searches every company app, answers with citations and turns answers into slides, docs and sheets.",
       },
-      { property: "og:title", content: "Enaz — Project Tracker Workspace" },
+      { property: "og:title", content: "Enaz — Enterprise Knowledge Assistant" },
       {
         property: "og:description",
-        content: "Dashboards, tasks, invoices, time tracking and reports for delivery teams.",
+        content: "Permission-aware enterprise search, AI assistant, agents and artifacts.",
       },
     ],
   }),
@@ -27,7 +27,7 @@ function Index() {
 
   useEffect(() => {
     if (!ready) return;
-    navigate({ to: user ? "/dashboard" : "/auth", replace: true });
+    navigate({ to: user ? "/assistant" : "/auth", replace: true });
   }, [ready, user, navigate]);
 
   return (

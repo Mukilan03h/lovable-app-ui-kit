@@ -34,9 +34,9 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/_app/dashboard")({
   head: () => ({
     meta: [
-      { title: "Dashboard — Enaz Project Tracker" },
+      { title: "Dashboard — Enaz Knowledge" },
       { name: "description", content: "Your tasks, project health, revenue and invoices at a glance." },
-      { property: "og:title", content: "Dashboard — Enaz Project Tracker" },
+      { property: "og:title", content: "Dashboard — Enaz Knowledge" },
       { property: "og:description", content: "Tasks, project health, revenue and invoices at a glance." },
     ],
   }),

@@ -16,7 +16,7 @@ export function NoAccess({ area }: { area: string }) {
           You're signed in as {user ? roleLabel[user.role] : "a guest"}. Ask an admin if you need this area opened up.
         </p>
         <Link
-          to="/dashboard"
+          to="/assistant"
           className="mt-6 inline-flex rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
         >
           Back to dashboard

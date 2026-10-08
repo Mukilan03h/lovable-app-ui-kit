@@ -41,10 +41,10 @@ export function AuthLayout({
                 transition={{ delay: 0.15, duration: 0.5 }}
                 className="max-w-sm text-3xl font-semibold leading-snug"
               >
-                Every project, task and invoice — in one calm workspace.
+                Every app, doc and conversation — answered with citations.
               </motion.h2>
               <p className="mt-3 max-w-sm text-sm text-white/70">
-                Plan the work, track the hours, bill the client. Nothing slips.
+                Search, research and create slides, docs and sheets — all permission-aware.
               </p>
               <div className="mt-7 flex gap-2">
                 {[0, 1, 2].map((i) => (

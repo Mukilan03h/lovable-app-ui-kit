@@ -13,6 +13,7 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { ThemeProvider } from "../lib/theme";
 import { AuthProvider } from "../lib/auth";
+import { Toaster } from "@/components/ui/sonner";
 
 function NotFoundComponent() {
   return (
@@ -79,15 +80,15 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Enaz — Project Tracker" },
+      { title: "Enaz — Enterprise Knowledge Assistant" },
       {
         name: "description",
-        content: "Track projects, tasks, teams, invoices and time in one workspace.",
+        content: "Search every company app, get cited answers and turn them into slides, docs and sheets.",
       },
-      { property: "og:title", content: "Enaz — Project Tracker" },
+      { property: "og:title", content: "Enaz — Enterprise Knowledge Assistant" },
       {
         property: "og:description",
-        content: "Track projects, tasks, teams, invoices and time in one workspace.",
+        content: "Search every company app, get cited answers and turn them into slides, docs and sheets.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -132,6 +133,7 @@ function RootComponent() {
         <AuthProvider>
           {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
           <Outlet />
+          <Toaster position="bottom-right" />
         </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>
