@@ -7,7 +7,10 @@ export const Route = createFileRoute("/signup")({
   head: () => ({
     meta: [
       { title: "Create account — Enaz Knowledge" },
-      { name: "description", content: "Create your Enaz workspace and search all your company knowledge." },
+      {
+        name: "description",
+        content: "Create your Enaz workspace and search all your company knowledge.",
+      },
       { property: "og:title", content: "Create account — Enaz Knowledge" },
       { property: "og:description", content: "Create your Enaz workspace in under a minute." },
     ],
@@ -29,7 +32,7 @@ function SignUp() {
         className="space-y-5"
         onSubmit={(e) => {
           e.preventDefault();
-          signIn("admin");
+          void signIn("admin");
           navigate({ to: "/assistant" });
         }}
       >
@@ -40,8 +43,8 @@ function SignUp() {
         <Field label="Work email" type="email" placeholder="you@company.com" />
         <Field label="Password" type="password" placeholder="At least 8 characters" />
         <label className="flex items-start gap-2 text-sm text-muted-foreground">
-          <input type="checkbox" defaultChecked className="mt-0.5 size-4 rounded border-input" />
-          I agree to the terms of service and privacy policy.
+          <input type="checkbox" defaultChecked className="mt-0.5 size-4 rounded border-input" />I
+          agree to the terms of service and privacy policy.
         </label>
         <motion.button
           whileTap={{ scale: 0.98 }}

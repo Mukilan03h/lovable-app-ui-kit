@@ -58,6 +58,7 @@ import {
   type SourceApp,
   type Step,
 } from "@/data/knowledge";
+import { apiEnabled, apiStream, downloadUrl } from "@/lib/api";
 
 export const Route = createFileRoute("/_app/assistant")({
   validateSearch: (search: Record<string, unknown>): { artifact?: ArtifactKind } => {
@@ -130,7 +131,13 @@ const bgClass: Record<string, string> = {
   dunes: "",
 };
 
-type Turn = { id: number; question: string; artifact: ArtifactKind | undefined };
+type Turn = {
+  id: number;
+  question: string;
+  artifact: ArtifactKind | undefined;
+  mode: string;
+  scope: SourceApp[];
+};
 
 const detectArtifact = (q: string): ArtifactKind | undefined => {
   const s = q.toLowerCase();
@@ -158,7 +165,10 @@ function AssistantPage() {
   const send = (text: string, kind?: ArtifactKind) => {
     const q = text.trim();
     if (!q) return;
-    setTurns((t) => [...t, { id: Date.now(), question: q, artifact: kind ?? detectArtifact(q) }]);
+    setTurns((t) => [
+      ...t,
+      { id: Date.now(), question: q, artifact: kind ?? detectArtifact(q), mode, scope: [...scope] },
+    ]);
     setInput("");
   };
 
@@ -504,31 +514,187 @@ function Welcome({
   );
 }
 
+type SourceCard = {
+  n: number;
+  title: string;
+  source: string;
+  snippet: string;
+  updated: string;
+  path?: string;
+};
+type TurnState = {
+  steps: { tool: Step["tool"]; label: string; detail: string }[];
+  paragraphs: { text: string; cites: number[] }[];
+  streamingText: string;
+  sources: SourceCard[];
+  verification: { supported: number; total: number } | null;
+  done: boolean;
+  summary: string;
+  artifactKind?: ArtifactKind;
+  artifactId?: string;
+};
+
+const relTime = (epoch?: number) => {
+  if (!epoch) return "";
+  const mins = Math.max(0, (Date.now() / 1000 - epoch) / 60);
+  if (mins < 60) return `${Math.round(mins)} min ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)} h ago`;
+  return `${Math.round(mins / 1440)} d ago`;
+};
+
+const sourceMeta = (source: string) => ({
+  logo: (sourceLogo as Record<string, string>)[source] ?? source,
+  label:
+    (sourceLabel as Record<string, string>)[source] ??
+    source.charAt(0).toUpperCase() + source.slice(1),
+});
+
+function reduceEvent(prev: TurnState, ev: Record<string, unknown>): TurnState {
+  switch (ev["type"]) {
+    case "step":
+      return {
+        ...prev,
+        steps: [
+          ...prev.steps,
+          {
+            tool: ev["tool"] as Step["tool"],
+            label: String(ev["label"]),
+            detail: String(ev["detail"] ?? ""),
+          },
+        ],
+      };
+    case "delta":
+      return { ...prev, streamingText: prev.streamingText + String(ev["text"] ?? "") };
+    case "answer":
+      return {
+        ...prev,
+        paragraphs: (ev["paragraphs"] as TurnState["paragraphs"]) ?? [],
+        streamingText: "",
+      };
+    case "sources":
+      return {
+        ...prev,
+        sources: ((ev["sources"] as Record<string, unknown>[]) ?? []).map((s) => ({
+          n: Number(s["n"]),
+          title: String(s["title"]),
+          source: String(s["source"]),
+          snippet: String(s["snippet"] ?? ""),
+          updated: relTime(s["updatedAt"] as number),
+          path: s["path"] as string,
+        })),
+      };
+    case "verification":
+      return {
+        ...prev,
+        verification: { supported: Number(ev["supported"]), total: Number(ev["total"]) },
+      };
+    case "artifact":
+      return {
+        ...prev,
+        artifactKind: ev["kind"] as ArtifactKind,
+        artifactId: String(ev["artifactId"]),
+      };
+    case "done":
+      return {
+        ...prev,
+        done: true,
+        summary: `Worked through ${prev.steps.length} steps · ${(Number(ev["latencyMs"] ?? 0) / 1000).toFixed(1)}s · $${Number(ev["cost"] ?? 0).toFixed(4)}${ev["cached"] ? " · cached" : ""}`,
+      };
+    case "error":
+      return { ...prev, done: true, summary: `Error: ${ev["message"]}` };
+    default:
+      return prev;
+  }
+}
+
+const EMPTY: TurnState = {
+  steps: [],
+  paragraphs: [],
+  streamingText: "",
+  sources: [],
+  verification: null,
+  done: false,
+  summary: "Working…",
+};
+
+function useTurn(turn: Turn): TurnState {
+  const [state, setState] = useState<TurnState>(EMPTY);
+
+  useEffect(() => {
+    if (!apiEnabled) return;
+    const ctrl = new AbortController();
+    apiStream(
+      "/api/assistant/ask",
+      {
+        query: turn.question,
+        mode: turn.mode,
+        artifact: turn.artifact,
+        sources: turn.scope.length ? turn.scope : undefined,
+      },
+      (ev) => setState((prev) => reduceEvent(prev, ev)),
+      ctrl.signal,
+    ).catch(() => setState((p) => ({ ...p, done: true, summary: "Couldn't reach the backend" })));
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (apiEnabled) return;
+    const steps = demoAnswer.steps.filter((s) => s.tool !== "artifact" || turn.artifact);
+    const cited = Array.from(new Set(demoAnswer.paragraphs.flatMap((p) => p.cites)));
+    const sources: SourceCard[] = cited.flatMap((id, i) => {
+      const d = docById(id);
+      return d
+        ? [{ n: i + 1, title: d.title, source: d.source, snippet: d.snippet, updated: d.updated }]
+        : [];
+    });
+    const paragraphs = demoAnswer.paragraphs.map((p) => ({
+      text: p.text,
+      cites: p.cites.map((id) => cited.indexOf(id) + 1),
+    }));
+    const seq: (() => void)[] = [];
+    steps.forEach((s) =>
+      seq.push(() =>
+        setState((prev) => ({
+          ...prev,
+          steps: [...prev.steps, { tool: s.tool, label: s.label, detail: s.detail }],
+        })),
+      ),
+    );
+    paragraphs.forEach((p) =>
+      seq.push(() => setState((prev) => ({ ...prev, paragraphs: [...prev.paragraphs, p] }))),
+    );
+    seq.push(() =>
+      setState((prev) => ({
+        ...prev,
+        sources,
+        verification: { supported: cited.length, total: cited.length },
+        done: true,
+        summary: `Worked through ${steps.length} steps · 3.4s · $0.006`,
+        ...(turn.artifact ? { artifactKind: turn.artifact } : {}),
+      })),
+    );
+    const timers = seq.map((fn, i) => window.setTimeout(fn, 350 * (i + 1)));
+    return () => timers.forEach((t) => window.clearTimeout(t));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return state;
+}
+
 function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: ArtifactKind) => void }) {
-  const steps = demoAnswer.steps.filter((s) => s.tool !== "artifact" || turn.artifact);
-  const total = steps.length + demoAnswer.paragraphs.length;
-  const [tick, setTick] = useState(0);
-  const [focused, setFocused] = useState<string | null>(null);
+  const state = useTurn(turn);
+  const [focused, setFocused] = useState<number | null>(null);
   const openedRef = useRef(false);
+  const done = state.done;
+  const artifactKind = state.artifactKind ?? turn.artifact;
 
   useEffect(() => {
-    if (tick >= total) return;
-    const id = window.setTimeout(() => setTick((t) => t + 1), 450);
-    return () => window.clearTimeout(id);
-  }, [tick, total]);
-
-  const stepCount = Math.min(tick, steps.length);
-  const paraCount = Math.max(0, tick - steps.length);
-  const done = tick >= total;
-
-  useEffect(() => {
-    if (done && turn.artifact && !openedRef.current) {
+    if (done && !apiEnabled && artifactKind && !openedRef.current) {
       openedRef.current = true;
-      onArtifact(turn.artifact);
+      onArtifact(artifactKind);
     }
-  }, [done, turn.artifact, onArtifact]);
-
-  const cited = Array.from(new Set(demoAnswer.paragraphs.flatMap((p) => p.cites)));
+  }, [done, artifactKind, onArtifact]);
 
   return (
     <div className="space-y-4">
@@ -545,15 +711,15 @@ function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: Artifact
           ) : (
             <span className="size-2 animate-ping rounded-full bg-brand" />
           )}
-          {done ? `Worked through ${steps.length} steps · 3.4s · $0.006` : "Working…"}
+          {done ? state.summary : "Working…"}
         </p>
         <ol className="space-y-1.5">
           <AnimatePresence initial={false}>
-            {steps.slice(0, stepCount).map((s) => {
-              const Icon = stepIcon[s.tool];
+            {state.steps.map((s, i) => {
+              const Icon = stepIcon[s.tool] ?? Search;
               return (
                 <motion.li
-                  key={s.label}
+                  key={`${s.label}-${i}`}
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   className="flex items-center gap-2 text-xs"
@@ -569,9 +735,12 @@ function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: Artifact
       </div>
 
       <div className="space-y-3 text-sm leading-relaxed">
-        {demoAnswer.paragraphs.slice(0, paraCount).map((p, i) => (
+        {state.paragraphs.length === 0 && state.streamingText && (
+          <p className="text-muted-foreground">{state.streamingText}</p>
+        )}
+        {state.paragraphs.map((p, i) => (
           <motion.p key={i} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-            {p.text}
+            {p.text.replace(/\[(\d+)\]/g, "")}
             {p.cites.map((c) => (
               <button
                 key={c}
@@ -580,7 +749,7 @@ function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: Artifact
                 onClick={() => setFocused(c)}
                 className="ml-1 inline-grid min-w-5 place-items-center rounded-md bg-brand/12 px-1 align-text-top text-[10px] font-bold text-brand"
               >
-                {cited.indexOf(c) + 1}
+                {c}
               </button>
             ))}
           </motion.p>
@@ -590,48 +759,74 @@ function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: Artifact
       {done && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
           <div className="grid gap-2 sm:grid-cols-2">
-            {cited.map((id, i) => {
-              const d = docById(id);
-              if (!d) return null;
+            {state.sources.map((s) => {
+              const meta = sourceMeta(s.source);
               return (
                 <div
-                  key={id}
+                  key={s.n}
                   className={cn(
                     "rounded-2xl border p-3 transition-colors",
-                    focused === id ? "border-brand bg-brand/5" : "border-border",
+                    focused === s.n ? "border-brand bg-brand/5" : "border-border",
                   )}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-brand">{i + 1}</span>
-                    <BrandLogo id={sourceLogo[d.source]} size="xs" />
+                    <span className="text-[10px] font-bold text-brand">{s.n}</span>
+                    <BrandLogo id={meta.logo} size="xs" />
                     <span className="text-[11px] font-medium text-muted-foreground">
-                      {sourceLabel[d.source]}
+                      {meta.label}
                     </span>
-                    <span className="ml-auto text-[10px] text-muted-foreground">{d.updated}</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{s.updated}</span>
                   </div>
-                  <p className="mt-1.5 truncate text-sm font-medium">{d.title}</p>
-                  <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{d.snippet}</p>
+                  <p className="mt-1.5 truncate text-sm font-medium">{s.title}</p>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{s.snippet}</p>
                 </div>
               );
             })}
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Pill tone="success">
-              <ShieldCheck className="size-3" /> 7/7 claims verified
-            </Pill>
-            {(Object.keys(artifactMeta) as ArtifactKind[]).map((k) => {
-              const M = artifactMeta[k];
-              return (
-                <button
-                  key={k}
-                  onClick={() => onArtifact(k)}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted"
+            {state.verification && (
+              <Pill
+                tone={
+                  state.verification.supported === state.verification.total ? "success" : "warning"
+                }
+              >
+                <ShieldCheck className="size-3" /> {state.verification.supported}/
+                {state.verification.total} claims verified
+              </Pill>
+            )}
+            {apiEnabled && state.artifactId ? (
+              <>
+                <a
+                  href={downloadUrl(`/api/artifacts/${state.artifactId}/download`)}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground"
                 >
-                  <M.icon className="size-3.5" /> {turn.artifact === k ? "Open" : "Turn into"}{" "}
-                  {M.label.toLowerCase()}
-                </button>
-              );
-            })}
+                  <FileText className="size-3.5" /> Download{" "}
+                  {artifactKind ? artifactMeta[artifactKind].ext : ""}
+                </a>
+                {artifactKind && (
+                  <button
+                    onClick={() => onArtifact(artifactKind)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted"
+                  >
+                    Open preview
+                  </button>
+                )}
+              </>
+            ) : (
+              (Object.keys(artifactMeta) as ArtifactKind[]).map((k) => {
+                const M = artifactMeta[k];
+                return (
+                  <button
+                    key={k}
+                    onClick={() => onArtifact(k)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted"
+                  >
+                    <M.icon className="size-3.5" /> {artifactKind === k ? "Open" : "Turn into"}{" "}
+                    {M.label.toLowerCase()}
+                  </button>
+                );
+              })
+            )}
             <button className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted">
               <FileText className="size-3.5" /> Copy with citations
             </button>

@@ -1,6 +1,7 @@
 import { Database, FileUp, Globe, HardDrive, Mail, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { brandPaths } from "./brand-paths";
+import { brandSvgs } from "./brand-svgs";
 
 /** Brands without a simple-icons glyph render as an initials tile in their brand color. */
 const monograms: Record<string, { title: string; hex: string; text: string }> = {
@@ -53,10 +54,32 @@ export function BrandLogo({
   size?: keyof typeof sizes;
   className?: string;
 }) {
+  const multicolor = brandSvgs[id];
   const brand = brandPaths[id];
   const mono = monograms[id];
   const gen = generic[id];
   const title = brandTitle(id);
+
+  if (multicolor) {
+    return (
+      <span
+        title={title}
+        className={cn(
+          "inline-grid shrink-0 place-items-center border border-black/5 bg-white shadow-sm dark:border-white/10",
+          sizes[size],
+          className,
+        )}
+      >
+        <svg
+          viewBox={multicolor.viewBox}
+          role="img"
+          aria-label={title}
+          className={glyph[size]}
+          dangerouslySetInnerHTML={{ __html: multicolor.inner }}
+        />
+      </span>
+    );
+  }
 
   if (mono) {
     return (

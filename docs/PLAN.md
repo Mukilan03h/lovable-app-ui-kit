@@ -472,3 +472,127 @@ security advisor part-time.
   [Unique.ai graph-based RAG research notes](https://docs.unique.ai/administrators/research/rag-evaluations/graph-based-rag-research)
 - Vendor claims above are from vendor/third-party pages; verify against current docs before
   publishing competitive material.
+
+---
+
+## 15. Deep capabilities & gap analysis (build 2 — answering the review)
+
+> This section tracks the second build pass: moving from the platform/UI layer to
+> the deep features that actually beat Onyx, and answering the specific questions
+> raised in review. Everything here is implemented in `backend/` and tested.
+
+### 15.1 Code-interpreter sandbox + per-session file context (the flagship)
+
+This is the capability Onyx does **not** have: a file used in a session stays in
+context and the AI can read, edit and run it — exactly how Claude handles files
+with a code interpreter.
+
+- **Sandbox** (`enaz/sandbox/executor.py`): Python runs in a **fresh network
+  namespace** (`unshare -rn`, verified to block all network), with CPU / memory /
+  file-size / process **rlimits** (runaway code is killed), a scrubbed env (no
+  keys, no proxy) and a wall-clock timeout. pandas + matplotlib are available, so
+  the AI can analyze spreadsheets and render charts. Production swaps the executor
+  for gVisor/Firecracker microVMs behind the same interface.
+- **Per-session workspace** (`enaz/sandbox/workspace.py`): each conversation gets
+  an isolated directory. Uploaded files land there; generated files persist and
+  are listed/downloadable.
+- **API** (`/api/conversations/{id}/files`, `/run`): upload (markitdown extracts
+  text for model context), list, read, **edit**, download, and run code. Generated
+  images come back as inline data URLs.
+- **Verified**: upload a CSV → the AI reads it, computes totals, saves a derived
+  CSV and a PNG chart, all inside the sandbox; network attempts fail; infinite
+  loops are killed; dot-dirs never leak into the file list. (Tests
+  `test_code_interpreter_session`, `test_sandbox_blocks_network`.)
+
+### 15.2 Best-in-class ingestion
+
+- **Markitdown** (Microsoft) is now the primary extractor for uploads — PDF, DOCX,
+  PPTX, XLSX, HTML, CSV, images (OCR), audio, EPUB, ZIP → clean Markdown — with the
+  built-in parsers as fallback.
+- **readability-lxml** extracts main-article content for web pages (drops nav /
+  boilerplate) before chunking.
+- **SearXNG** is wired as a self-hosted web-search provider for the "Web" toggle
+  (`ENAZ_SEARXNG_URL`); privacy-respecting web augmentation with no third party.
+- **crawl4ai** is installable and slots into the web connector for JS-rendered
+  crawls when enabled.
+
+### 15.3 Universal connectors — beyond any platform's fixed list
+
+Onyx has ~60 hard-coded connectors. We ship a catalog of **42 sources with real
+logos** plus two **open-ended** connectors so *anything* with an API becomes a
+source:
+
+- **REST / JSON API connector**: point it at any list endpoint, map fields
+  (`id/title/text`, array path, auth header) → documents. No code per source.
+- **MCP connector**: call any MCP server's tool and ingest the results.
+- Plus the live **web crawler**, **GitHub**, and **file upload**. The framework
+  (`enaz/ingest/connectors/`) registers new connectors in ~40 lines (see
+  `builtin.py`), and permissions are copied from the source into `doc_acl`.
+
+### 15.4 Agents UX — answering "Onyx opens a new window per agent; which is best?"
+
+**Inline is best, and that is what we do.** The agent is a **dropdown in the chat
+header** (`/assistant`): switching agents keeps the same conversation, context and
+file workspace — no new window, no context loss. An agent is just a saved
+(instructions + knowledge scope + tools + trigger + output) profile layered onto
+the same assistant. Side-effect actions pause for **approval** in-thread rather
+than spawning a separate surface. This is simpler than Onyx and keeps one working
+context, which also lets an agent use the session's files via the code interpreter.
+
+### 15.5 Chat vs. Search + document selection — matching Onyx's best UX
+
+- **Mode is a toggle in the composer**: *Auto / Quick / Deep Research / Agent* —
+  plus a dedicated **Search** page for document-first exploration with facets.
+  "Search only" is a chat default in Settings, mirroring Onyx's Chat/Search split.
+- **Document selection**: the composer has per-source **scope chips** (pick which
+  connected apps to search), and connected sources / document sets scope what a
+  query sees — all permission-filtered. This matches Onyx's "select which documents
+  to chat with" and adds our streaming step timeline + per-claim verification.
+
+### 15.6 Full Onyx gap table (where we stand now)
+
+| Onyx capability | Enaz status |
+| --- | --- |
+| Agentic RAG (hybrid + rerank) | ✅ hybrid pgvector + Postgres FTS + RRF + reranker |
+| Deep research | ✅ planner → parallel sub-search → synthesis → verifier (streamed) |
+| Custom agents + actions | ✅ inline agents, tools, triggers, approvals |
+| **Craft** (build apps/docs/decks) | ✅ **beaten**: artifacts in every chat (PPTX/DOCX/XLSX w/ live formulas) **+ code-interpreter sandbox with session files** |
+| Secure sandbox / code interpreter | ✅ network-isolated, rlimited, per-session workspace |
+| Web search (Serper/Brave/SearXNG…) | ✅ SearXNG provider (others slot in) |
+| MCP & OpenAPI actions | ✅ MCP client connector + MCP server endpoint; OpenAPI next |
+| Skills | ◻ planned (agent instructions + files today) |
+| Voice | ◻ UI present; STT/TTS provider pending |
+| 60+ connectors | ✅ 42 with logos **+ universal REST/MCP = unbounded** |
+| Permission sync (17 sources, **paid in Onyx**) | ✅ ACL copied into `doc_acl`, enforced in retrieval + RLS — **free** |
+| Groups / SCIM / SSO (**paid in Onyx**) | ✅ groups, SCIM 2.0, OIDC — **free** |
+| White-label / analytics / query history (**paid**) | ✅ branding, insights, query history — **free** |
+| Standard answers | ✅ verified answers |
+| Multi-tenant isolation | ✅ Postgres **row-level security** (stronger than app-layer) |
+| Eval tooling | ✅ **in-product** golden-set gate (recall@k, citation rate) |
+
+Still missing / next: Skills packages, voice STT/TTS, OpenAPI action builder,
+multi-model side-by-side answers, shared chats, and the in-chat code-interpreter
+tool-use loop (the REST sandbox is done; wiring it as an LLM tool mid-chat is the
+remaining online-mode step).
+
+### 15.7 Parameters we had not optimized — and the tuning pass
+
+| Parameter | Was | Tuned to / recommendation | Why |
+| --- | --- | --- | --- |
+| HNSW `m` / `ef_construction` | defaults | `m=16`, `ef_construction=64` (set in migration) | recall/latency balance for ≤5M vectors |
+| HNSW `ef_search` | implicit | set per query via `hnsw.iterative_scan=relaxed_order` + `max_scan_tuples=20000` | keeps recall high when the ACL filter is selective (restricted users) |
+| Hybrid fusion | RRF only | RRF(`k=60`) → cross-encoder rerank → recency/authority boosts → MMR | precision after recall |
+| Final score weights | n/a | `0.7·rerank + 0.22·rrf + 0.08·recency` | rerank dominates, freshness breaks ties |
+| Chunk size / overlap | n/a | 380 target / 520 max tokens, 1-sentence overlap, parent 1600 | retrieve small, read large |
+| Contextual headers | n/a | on (doc title + path + 1-line summary prefixed before embed + FTS) | the single biggest recall lever |
+| Router default | always big model | small model / heuristic routes 70%+ to quick path | 3–5× cost cut; baseline comparison on the insights page |
+| Escalation threshold | n/a | confidence < 0.35 → auto-escalate quick → research | avoids wrong cheap answers |
+| Semantic cache | n/a | keyed by **(tenant, ACL set)**, cosine ≥ 0.96, 1h TTL | never leaks across permissions |
+| Prompt caching | n/a | system/tools/long-doc prefix cached (Anthropic) | 50–90% input-cost cut |
+| Sandbox limits | n/a | 20s CPU, 768MB, 64MB file, 25s wall, no network | safe, fast cells |
+| Reranker | local cross-features | pluggable Cohere/Voyage via env | hosted rerank for top precision |
+| Embeddings | hashing (offline) | pluggable Voyage/BGE/Qwen via env; **re-index on change** | neural quality when a key exists |
+
+Levers still open: learned-to-rank weights from click feedback, per-tenant HNSW
+`ef_search` tuning, binary/int8 vector quantization with rescoring (storage/latency
+at scale), and a GraphRAG community-summary layer for global questions.

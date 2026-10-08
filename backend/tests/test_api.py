@@ -1,0 +1,268 @@
+"""End-to-end API tests: auth, RBAC, ACL, streaming answers, artifacts, admin, SCIM."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from .conftest import auth, token_for
+
+
+async def read_sse(client, url, headers, body):
+    events = []
+    async with client.stream("POST", url, headers=headers, json=body) as resp:
+        assert resp.status_code == 200
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    return events
+
+
+async def test_health(client):
+    resp = await client.get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+    assert resp.json()["llm"] == "offline"
+
+
+async def test_login_and_me(client, services):
+    token = await token_for(client, services, "admin")
+    resp = await client.get("/api/auth/me", headers=auth(token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["user"]["role"] == "admin"
+    assert "public" in data["principals"]
+
+
+async def test_password_login(client, services):
+    resp = await client.post("/api/auth/login", json={"email": "admin@test.com", "password": "pw", "tenant": services._test_slug})
+    assert resp.status_code == 200
+    assert resp.json()["user"]["email"] == "admin@test.com"
+    bad = await client.post("/api/auth/login", json={"email": "admin@test.com", "password": "wrong", "tenant": services._test_slug})
+    assert bad.status_code == 401
+
+
+async def test_rbac_blocks_member_from_admin(client, services):
+    token = await token_for(client, services, "member")
+    resp = await client.get("/api/admin/overview", headers=auth(token))
+    assert resp.status_code == 403
+
+
+async def test_search_and_acl(client, services):
+    admin = await token_for(client, services, "admin")
+    member = await token_for(client, services, "member")
+    client_tok = await token_for(client, services, "client")
+
+    r = await client.get("/api/search", params={"q": "GA launch blocker"}, headers=auth(admin))
+    assert r.status_code == 200
+    assert any(h["title"] == "GA readiness" for h in r.json()["results"])
+
+    # Member (engineering) sees eng doc; not leadership-only comp doc.
+    r = await client.get("/api/search", params={"q": "executive compensation equity"}, headers=auth(member))
+    titles = [h["title"] for h in r.json()["results"]]
+    assert "Executive compensation" not in titles
+
+    # Admin (leadership) does see it.
+    r = await client.get("/api/search", params={"q": "executive compensation equity"}, headers=auth(admin))
+    assert "Executive compensation" in [h["title"] for h in r.json()["results"]]
+
+    # Guest sees neither public-internal nor restricted docs.
+    r = await client.get("/api/search", params={"q": "retrieval architecture reranker"}, headers=auth(client_tok))
+    assert "Retrieval architecture" not in [h["title"] for h in r.json()["results"]]
+
+
+async def test_assistant_quick_answer(client, services):
+    token = await token_for(client, services, "admin")
+    events = await read_sse(client, "/api/assistant/ask", auth(token),
+                            {"query": "What is blocking the GA launch?", "mode": "quick"})
+    types = [e["type"] for e in events]
+    assert "route" in types and "answer" in types and "sources" in types and "done" in types
+    answer = next(e for e in events if e["type"] == "answer")
+    assert "[1]" in answer["text"] or answer["paragraphs"][0]["cites"]
+    done = next(e for e in events if e["type"] == "done")
+    assert done["baselineCost"] >= done["cost"]
+
+
+async def test_assistant_research_with_artifact(client, services):
+    token = await token_for(client, services, "admin")
+    events = await read_sse(client, "/api/assistant/ask", auth(token),
+                            {"query": "Build a deck on GA readiness", "mode": "research", "artifact": "slides"})
+    artifact = [e for e in events if e["type"] == "artifact"]
+    assert artifact, "expected an artifact event"
+    aid = artifact[0]["artifactId"]
+
+    dl = await client.get(f"/api/artifacts/{aid}/download", headers=auth(token))
+    assert dl.status_code == 200
+    assert dl.content[:2] == b"PK"  # valid OOXML/zip
+    assert "presentation" in dl.headers["content-type"]
+
+    # Edit by instruction creates a new version.
+    patched = await client.post(f"/api/artifacts/{aid}/patch", headers=auth(token), json={"instruction": "add a risks slide"})
+    assert patched.status_code == 200
+    assert patched.json()["version"] == 2
+
+
+async def test_upload_and_index(client, services):
+    token = await token_for(client, services, "admin")
+    files = {"file": ("note.md", b"# Onboarding\nConnect the identity provider in week one.", "text/markdown")}
+    resp = await client.post("/api/connectors/upload", headers=auth(token), files=files, data={"access": "public"})
+    assert resp.status_code == 200
+    r = await client.get("/api/search", params={"q": "identity provider week one"}, headers=auth(token))
+    assert any("Onboarding" in h["title"] for h in r.json()["results"])
+
+
+async def test_connectors_catalog(client, services):
+    token = await token_for(client, services, "admin")
+    resp = await client.get("/api/connectors/catalog", headers=auth(token))
+    assert resp.status_code == 200
+    cat = resp.json()["connectors"]
+    assert len(cat) >= 40
+    assert any(c["live"] and c["type"] == "github" for c in cat)
+
+
+async def test_settings_memory_and_tokens(client, services):
+    token = await token_for(client, services, "member")
+    m = await client.post("/api/settings/memory", headers=auth(token), json={"text": "Prefers concise answers"})
+    assert m.status_code == 200
+    mem = await client.get("/api/settings/memory", headers=auth(token))
+    assert any(x["text"] == "Prefers concise answers" for x in mem.json()["memories"])
+
+    t = await client.post("/api/settings/tokens", headers=auth(token), json={"name": "CLI", "scopes": ["search"]})
+    raw = t.json()["token"]
+    assert raw.startswith("enaz_")
+    # The raw token authenticates and is scoped.
+    r = await client.get("/api/search", params={"q": "GA launch"}, headers=auth(raw))
+    assert r.status_code == 200
+    # ...but not for an unscoped permission.
+    bad = await client.get("/api/artifacts", headers=auth(raw))
+    assert bad.status_code == 403
+
+
+async def test_mcp_search(client, services):
+    token = await token_for(client, services, "member")
+    t = await client.post("/api/settings/tokens", headers=auth(token), json={"name": "MCP", "scopes": ["search"]})
+    raw = t.json()["token"]
+    resp = await client.post("/api/mcp", headers=auth(raw), json={"method": "tools/list"})
+    assert any(tool["name"] == "search" for tool in resp.json()["tools"])
+    call = await client.post("/api/mcp", headers=auth(raw),
+                             json={"method": "tools/call", "params": {"name": "search", "arguments": {"query": "GA launch"}}})
+    assert call.status_code == 200 and not call.json()["isError"]
+
+
+async def test_admin_eval_and_insights(client, services):
+    token = await token_for(client, services, "admin")
+    ev = await client.post("/api/admin/evals/run", headers=auth(token))
+    assert ev.status_code == 200
+    assert ev.json()["questions"] >= 1
+    assert ev.json()["recallAt10"] >= 50
+
+    # Generate some query traffic, then check insights reflect it.
+    await read_sse(client, "/api/assistant/ask", auth(token), {"query": "bake-off results", "mode": "quick"})
+    ins = await client.get("/api/insights", params={"days": 7}, headers=auth(token))
+    assert ins.json()["stats"]["queries"] >= 1
+
+
+async def test_scim_provisioning(client, services):
+    admin = await token_for(client, services, "admin")
+    t = await client.post("/api/settings/tokens", headers=auth(admin), json={"name": "SCIM", "scopes": ["scim"]})
+    scim_token = t.json()["token"]
+    created = await client.post(
+        "/scim/v2/Users", headers=auth(scim_token),
+        json={"userName": "scim.user@test.com", "name": {"givenName": "Scim", "familyName": "User"}, "active": True},
+    )
+    assert created.status_code == 201
+    uid = created.json()["id"]
+    listed = await client.get("/scim/v2/Users", headers=auth(scim_token))
+    assert any(u["userName"] == "scim.user@test.com" for u in listed.json()["Resources"])
+    # Deactivate via PATCH.
+    patched = await client.patch(f"/scim/v2/Users/{uid}", headers=auth(scim_token),
+                                 json={"Operations": [{"op": "replace", "path": "active", "value": False}]})
+    assert patched.json()["active"] is False
+    # A non-SCIM token is rejected.
+    bad = await client.get("/scim/v2/Users", headers=auth(admin))
+    assert bad.status_code in (401, 403)
+
+
+async def test_agents_list_and_create(client, services):
+    token = await token_for(client, services, "admin")
+    created = await client.post("/api/agents", headers=auth(token),
+                                json={"name": "Test agent", "description": "d", "tools": ["Search"], "output": "answer"})
+    assert created.status_code == 200
+    listed = await client.get("/api/agents", headers=auth(token))
+    assert any(a["name"] == "Test agent" for a in listed.json()["agents"])
+
+
+async def test_tenant_isolation(client, services):
+    """A token from this tenant must never read another tenant's data."""
+    admin = await token_for(client, services, "admin")
+    # Create a second tenant with a doc, directly.
+    async with services.db.admin() as conn:
+        other = await conn.fetchval("INSERT INTO tenants (slug,name) VALUES ($1,$1) RETURNING id", f"other-{services._test_slug}")
+    try:
+        from enaz.ingest.pipeline import SourceDocument
+        await services.ingest.ingest(str(other), SourceDocument("x", "Other tenant secret", "drive", ["public"], text="Secret from another company entirely."))
+        r = await client.get("/api/search", params={"q": "Other tenant secret company"}, headers=auth(admin))
+        assert "Other tenant secret" not in [h["title"] for h in r.json()["results"]]
+    finally:
+        async with services.db.admin() as conn:
+            await conn.execute("DELETE FROM tenants WHERE id = $1", other)
+
+
+async def test_connector_catalog_has_universal(client, services):
+    token = await token_for(client, services, "admin")
+    resp = await client.get("/api/connectors/catalog", headers=auth(token))
+    types = {c["type"] for c in resp.json()["connectors"]}
+    assert {"rest", "mcp", "web", "github"} <= types
+    live = {c["type"] for c in resp.json()["connectors"] if c["live"]}
+    assert {"web", "github", "rest", "mcp"} <= live
+
+
+async def test_code_interpreter_session(client, services):
+    import uuid
+
+    token = await token_for(client, services, "admin")
+    cid = str(uuid.uuid4())
+    # Upload a CSV; markitdown extracts it.
+    files = {"file": ("sales.csv", b"product,revenue\nAlpha,120\nBeta,90\nGamma,150\n", "text/csv")}
+    up = await client.post(f"/api/conversations/{cid}/files", headers=auth(token), files=files)
+    assert up.status_code == 200
+    assert up.json()["extracted"] is True
+
+    # The AI runs code over the uploaded file: compute + chart + a derived file.
+    code = (
+        "import pandas as pd, matplotlib.pyplot as plt\n"
+        "df = pd.read_csv('sales.csv')\n"
+        "print('total', df.revenue.sum())\n"
+        "df.plot.bar(x='product', y='revenue'); plt.savefig('chart.png')\n"
+        "df.to_csv('out.csv', index=False)\n"
+    )
+    run = await client.post(f"/api/conversations/{cid}/run", headers=auth(token), json={"code": code})
+    assert run.status_code == 200
+    data = run.json()
+    assert data["returnCode"] == 0
+    assert "total 360" in data["stdout"]
+    names = {f["name"] for f in data["files"]}
+    assert "chart.png" in names and "out.csv" in names
+    assert data["images"] and data["images"][0]["dataUrl"].startswith("data:image/png;base64,")
+
+    # The generated file is listed and downloadable.
+    listed = await client.get(f"/api/conversations/{cid}/files", headers=auth(token))
+    listed_names = {f["name"] for f in listed.json()["files"]}
+    assert {"sales.csv", "chart.png", "out.csv"} <= listed_names
+    assert not any(n.startswith(".") for n in listed_names)
+    dl = await client.get(f"/api/conversations/{cid}/files/chart.png/download", headers=auth(token))
+    assert dl.status_code == 200 and dl.content[:4] == b"\x89PNG"
+
+
+async def test_sandbox_blocks_network(client, services):
+    import uuid
+
+    token = await token_for(client, services, "admin")
+    cid = str(uuid.uuid4())
+    code = "import socket; socket.setdefaulttimeout(2); socket.create_connection(('1.1.1.1', 53)); print('REACHED')"
+    run = await client.post(f"/api/conversations/{cid}/run", headers=auth(token), json={"code": code})
+    data = run.json()
+    assert "REACHED" not in data["stdout"]
+    # Isolation is active in this environment.
+    assert data["networkIsolated"] is True
