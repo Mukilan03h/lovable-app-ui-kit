@@ -211,6 +211,10 @@ export const api = {
   artifacts: () => apiGet<{ artifacts: ArtifactRow[] }>("/api/artifacts"),
   artifact: (id: string) => apiGet<ArtifactDetail>(`/api/artifacts/${id}`),
   patchArtifact: (id: string, instruction: string) => apiSend(`/api/artifacts/${id}/patch`, "POST", { instruction }),
+  artifactFreshness: (id: string) => apiGet<ArtifactFreshness>(`/api/artifacts/${id}/freshness`),
+  refreshArtifact: (id: string) => apiSend<ArtifactRefresh>(`/api/artifacts/${id}/refresh`, "POST"),
+  acceptArtifactRefresh: (id: string, spec: Record<string, unknown>) =>
+    apiSend<{ id: string; version: number; title: string }>(`/api/artifacts/${id}/refresh/accept`, "POST", { spec }),
   updateArtifact: (id: string, body: { pinned?: boolean; shared?: string }) => apiSend(`/api/artifacts/${id}`, "PATCH", body),
   deleteArtifact: (id: string) => apiSend(`/api/artifacts/${id}`, "DELETE"),
 
@@ -372,6 +376,14 @@ export type AgentTestResult = {
   proposedChanges: { tool: string; summary: string }[];
   followedInstructions: { producedAnswer: boolean; stayedWithinSourceScope: boolean; scope: unknown };
   estimatedCost: number; note: string;
+};
+export type ArtifactFreshness = {
+  stale: boolean; sourceCount: number; checkedAt: number;
+  changedSources: { docId: string; title: string }[]; missingSources: { docId: string; title: string }[];
+};
+export type ArtifactRefresh = {
+  currentSpec: Record<string, unknown>; proposedSpec: Record<string, unknown>;
+  diff: { change: string; [k: string]: unknown }[];
 };
 export type LiveSource = { id: string; name: string; kind: string; description: string; enabled: boolean };
 export type LiveQueryResult = { name: string; columns: string[]; rows: unknown[][]; checkedAt: number; rowCount: number };

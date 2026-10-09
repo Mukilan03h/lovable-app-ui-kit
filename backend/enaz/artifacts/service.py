@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
+
+
+def _now() -> float:
+    return time.time()
 
 from ..config import Settings
 from ..db import Database
@@ -38,7 +43,8 @@ class ArtifactService:
 
     async def generate(self, tenant_id, user_id, query, kind, ledger, cost: CostLedger | None = None) -> dict[str, Any]:
         spec = await self._build_spec(query, kind, ledger, cost)
-        return await self._store(tenant_id, user_id, kind, spec, sources=len(ledger.items), note="Generated from answer")
+        return await self._store(tenant_id, user_id, kind, spec, sources=len(ledger.items),
+                                 note="Generated from answer", source_query=query, ledger=ledger)
 
     async def _build_spec(self, query, kind, ledger, cost):
         model_cls = SPEC_MODELS[kind]
@@ -79,21 +85,86 @@ class ArtifactService:
         return SheetSpec(title=title, tabs=[SheetTab(name="Findings", columns=["Finding", "Source"], rows=rows)],
                          sources=sources)
 
-    async def _store(self, tenant_id, user_id, kind, spec, sources, note) -> dict[str, Any]:
+    async def _store(self, tenant_id, user_id, kind, spec, sources, note, source_query="", ledger=None) -> dict[str, Any]:
         fmt = FORMATS[kind]
         spec_json = json.dumps(spec.model_dump())
         async with self.db.acquire(tenant_id) as conn:
             row = await conn.fetchrow(
-                """INSERT INTO artifacts (tenant_id, user_id, title, kind, format, sources, current_version)
-                   VALUES ($1,$2,$3,$4,$5,$6,1) RETURNING id, created_at""",
-                tenant_id, user_id, spec.title, kind, fmt, sources,
+                """INSERT INTO artifacts (tenant_id, user_id, title, kind, format, sources, current_version, source_query)
+                   VALUES ($1,$2,$3,$4,$5,$6,1,$7) RETURNING id, created_at""",
+                tenant_id, user_id, spec.title, kind, fmt, sources, source_query,
             )
             aid = str(row["id"])
             await conn.execute(
                 "INSERT INTO artifact_versions (tenant_id, artifact_id, version, spec, note) VALUES ($1,$2,1,$3,$4)",
                 tenant_id, aid, spec_json, note,
             )
+            await self._record_sources(conn, tenant_id, aid, ledger)
         return {"id": aid, "title": spec.title, "kind": kind, "format": fmt, "version": 1, "sources": sources}
+
+    async def _record_sources(self, conn, tenant_id, artifact_id, ledger) -> None:
+        """Snapshot the artifact's source documents and their current content hash,
+        so a later source change can be detected."""
+        if ledger is None:
+            return
+        doc_ids = {str(e.hit.doc_id): e.hit.title for e in ledger.items if getattr(e.hit, "doc_id", None)}
+        if not doc_ids:
+            return
+        await conn.execute("DELETE FROM artifact_sources WHERE artifact_id=$1", artifact_id)
+        hashes = {str(r["id"]): r["content_hash"] for r in await conn.fetch(
+            "SELECT id, content_hash FROM documents WHERE id = ANY($1::uuid[])", list(doc_ids.keys())
+        )}
+        await conn.executemany(
+            "INSERT INTO artifact_sources (tenant_id, artifact_id, doc_id, title, built_hash) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (artifact_id, doc_id) DO UPDATE SET built_hash=excluded.built_hash, title=excluded.title",
+            [(tenant_id, artifact_id, did, title, hashes.get(did, "")) for did, title in doc_ids.items()],
+        )
+
+    async def freshness(self, tenant_id, artifact_id) -> dict[str, Any]:
+        """Compare each source document's current content hash with the hash
+        recorded when the artifact was built."""
+        async with self.db.acquire(tenant_id) as conn:
+            rows = await conn.fetch(
+                """SELECT s.doc_id, s.title, s.built_hash, d.content_hash AS current_hash
+                   FROM artifact_sources s LEFT JOIN documents d ON d.id = s.doc_id
+                   WHERE s.artifact_id = $1""",
+                artifact_id,
+            )
+        changed, missing = [], []
+        for r in rows:
+            if r["current_hash"] is None:
+                missing.append({"docId": str(r["doc_id"]), "title": r["title"]})
+            elif r["current_hash"] != r["built_hash"]:
+                changed.append({"docId": str(r["doc_id"]), "title": r["title"]})
+        return {
+            "stale": bool(changed or missing), "sourceCount": len(rows),
+            "changedSources": changed, "missingSources": missing,
+            "checkedAt": _now(),
+        }
+
+    async def accept_refresh(self, tenant_id, artifact_id, spec_dict: dict, note: str = "Refreshed from updated sources") -> dict[str, Any] | None:
+        """Store a refreshed spec as a NEW version (history preserved) and
+        re-snapshot the source hashes so the artifact reads fresh again."""
+        async with self.db.acquire(tenant_id) as conn:
+            art = await conn.fetchrow("SELECT current_version FROM artifacts WHERE id=$1", artifact_id)
+            if not art:
+                return None
+            version = art["current_version"] + 1
+            title = spec_dict.get("title") or ""
+            await conn.execute(
+                "INSERT INTO artifact_versions (tenant_id, artifact_id, version, spec, note) VALUES ($1,$2,$3,$4,$5)",
+                tenant_id, artifact_id, version, json.dumps(spec_dict), note,
+            )
+            await conn.execute(
+                "UPDATE artifacts SET current_version=$2, title=COALESCE(NULLIF($3,''), title), updated_at=now() WHERE id=$1",
+                artifact_id, version, title,
+            )
+            # Re-snapshot: all current sources are now the built baseline.
+            await conn.execute(
+                """UPDATE artifact_sources s SET built_hash = d.content_hash
+                   FROM documents d WHERE d.id = s.doc_id AND s.artifact_id = $1""",
+                artifact_id,
+            )
+        return {"id": artifact_id, "version": version, "title": title}
 
     async def get(self, tenant_id, artifact_id) -> dict[str, Any] | None:
         async with self.db.acquire(tenant_id) as conn:

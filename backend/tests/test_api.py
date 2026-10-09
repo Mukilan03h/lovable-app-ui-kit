@@ -638,3 +638,41 @@ async def test_live_data_folds_into_answer(client, services):
     assert any(e.get("type") == "step" and e.get("label") == "Checked live data" for e in events)
     answer = next((e for e in events if e.get("type") == "answer"), {})
     assert answer.get("text")
+
+
+async def test_connected_artifact_freshness_and_refresh(client, services):
+    """A generated artifact tracks its sources; a source change marks it stale and
+    refresh proposes a diffed new version without overwriting."""
+    admin = await token_for(client, services, "admin")
+    tid = services._test_tenant
+    # Generate a doc artifact from a real answer (records its source docs).
+    events = await read_sse(client, "/api/assistant/ask", auth(admin),
+                            {"query": "summarise the security review", "mode": "research", "artifact": "doc"})
+    ev = next((e for e in events if e.get("type") == "artifact"), None)
+    assert ev, "expected an artifact to be generated"
+    art_id = ev["artifactId"]
+
+    fresh = (await client.get(f"/api/artifacts/{art_id}/freshness", headers=auth(admin))).json()
+    assert fresh["sourceCount"] >= 1 and fresh["stale"] is False
+
+    # Simulate a source document changing.
+    async with services.db.acquire(tid) as conn:
+        doc_id = await conn.fetchval("SELECT doc_id FROM artifact_sources WHERE artifact_id=$1 LIMIT 1", art_id)
+        await conn.execute("UPDATE documents SET content_hash='CHANGED-"+str(doc_id)[:8]+"' WHERE id=$1", doc_id)
+
+    stale = (await client.get(f"/api/artifacts/{art_id}/freshness", headers=auth(admin))).json()
+    assert stale["stale"] is True
+    assert any(c["docId"] == str(doc_id) for c in stale["changedSources"])
+
+    # Refresh proposes a new spec + diff, without overwriting (still version 1).
+    proposal = (await client.post(f"/api/artifacts/{art_id}/refresh", headers=auth(admin))).json()
+    assert "proposedSpec" in proposal and "diff" in proposal
+    before = (await client.get(f"/api/artifacts/{art_id}", headers=auth(admin))).json()
+    assert before["version"] == 1
+
+    # Accept → new version, and the artifact reads fresh again.
+    acc = await client.post(f"/api/artifacts/{art_id}/refresh/accept", headers=auth(admin),
+                            json={"spec": proposal["proposedSpec"]})
+    assert acc.json()["version"] == 2
+    after = (await client.get(f"/api/artifacts/{art_id}/freshness", headers=auth(admin))).json()
+    assert after["stale"] is False
