@@ -230,7 +230,19 @@ export const api = {
   createAgent: (body: Record<string, unknown>) => apiSend("/api/agents", "POST", body),
   testAgent: (id: string, task?: string) => apiSend<AgentTestResult>(`/api/agents/${id}/test`, "POST", task ? { task } : {}),
   approvals: () => apiGet<{ approvals: ApprovalRow[] }>("/api/approvals"),
-  decideApproval: (id: string, decision: "approve" | "deny") => apiSend(`/api/approvals/${id}`, "POST", { decision }),
+  decideApproval: (id: string, decision: "approve" | "deny", args?: Record<string, unknown>) =>
+    apiSend<{ ok: boolean; status: string; jobStatus: string | null }>(
+      `/api/approvals/${id}`,
+      "POST",
+      args ? { decision, args } : { decision },
+    ),
+
+  // durable agent runs (jobs)
+  enqueueJob: (agentId: string, body: { task?: string; budget?: number; idempotencyKey?: string } = {}) =>
+    apiSend<{ jobId: string; status: string }>(`/api/agents/${agentId}/jobs`, "POST", body),
+  jobs: () => apiGet<{ jobs: JobRow[] }>("/api/jobs"),
+  job: (id: string, after = 0) => apiGet<JobDetail>(`/api/jobs/${id}?after=${after}`),
+  cancelJob: (id: string) => apiSend<{ ok: boolean; status: string }>(`/api/jobs/${id}/cancel`, "POST"),
 
   // settings
   settings: () => apiGet<SettingsResponse>("/api/settings"),
@@ -352,6 +364,17 @@ export type AgentTestResult = {
   proposedChanges: { tool: string; summary: string }[];
   followedInstructions: { producedAnswer: boolean; stayedWithinSourceScope: boolean; scope: unknown };
   estimatedCost: number; note: string;
+};
+export type JobRow = {
+  id: string; status: string; task: string; agent: string | null; cost: number;
+  error: string | null; createdAt: number | null; finishedAt: number | null;
+};
+export type JobEvent = { seq: number; type: string; [k: string]: unknown };
+export type JobReceipt = { actionId: string; step: string; tool: string; status: string; createdAt: number | null };
+export type JobDetail = {
+  id: string; status: string; task: string; agent: string | null; cost: number;
+  error: string | null; result: Record<string, unknown>; createdAt: number | null; finishedAt: number | null;
+  events: JobEvent[]; receipts: JobReceipt[];
 };
 export type AgentRow = {
   id: string; name: string; description: string; tools: string[]; trigger: string; output: string;
