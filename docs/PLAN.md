@@ -874,3 +874,48 @@ action failures, latency, cost per successful task. Do not claim superiority ove
 Glean/Onyx without a comparable independent benchmark. Keep the feature behind a
 disabled-by-default flag until the dependency decision is complete and stages 1–3
 pass their acceptance checks.
+
+---
+
+## 20.6 DECISION: Option 1 — fully self-owned coworker platform
+
+The coworker platform is built entirely in-house. No third-party agent runtime,
+no hosted "intelligence" service, no CopilotKit/OpenDots dependency. Enterprise
+conversations, documents, credentials and tool results never leave our stack.
+Only open, self-implementable *protocols* and *techniques* are borrowed.
+
+### Techniques we adopt (ideas, not dependencies)
+- **Open agent↔UI event protocol (AG-UI-aligned, our implementation).** AG-UI is
+  an open spec over SSE/WebSocket with a small set of typed events; we define our
+  own typed stream — run lifecycle (`run.started/finished/failed`), text deltas,
+  `tool.call`/`tool.result`, `state` snapshots/patches, `error`, and an
+  `interrupt` (ask-the-human) event — and keep our existing SSE clients working.
+- **Durable execution on Postgres (our queue, not Temporal/DBOS/Restate).**
+  Standard durable-execution ideas implemented directly: a jobs table claimed
+  with `SELECT ... FOR UPDATE SKIP LOCKED`, per-job **leases** (visibility
+  timeout) so a crashed worker's job is reclaimed, **checkpoints** (completed
+  steps persisted so a resumed run skips them), **idempotency keys** +
+  **execution receipts** for every side effect, and **saga compensation** to
+  reconcile a half-finished run before retrying a write. At-least-once delivery
+  with reconciliation — never a silent exactly-once promise.
+- **Human-in-the-loop as a first-class state.** A run parks in
+  `awaiting_approval`, persists the exact proposed tool args, and only the
+  approved (or edited) version executes; editing invalidates the prior approval.
+- **Permission re-checks at every boundary.** Requester∩agent-scope∩workspace is
+  re-evaluated before retrieval, before each side effect, and on resume;
+  revocation invalidates cached results.
+
+### The features we build (all ours)
+| # | Feature | Owned mechanism |
+| --- | --- | --- |
+| C1 | Durable run engine | `agent_jobs` + run-state machine (queued→running→awaiting_approval→paused→succeeded/failed/cancelled/interrupted); worker loop with SKIP LOCKED + leases; survives chat close and worker restart. |
+| C2 | Own event protocol | typed SSE events (lifecycle/text/tool/state/error/interrupt); one adapter, our schema; existing clients unaffected. |
+| C3 | Tool execution loop | policy-filtered tool registry; each call produces a receipt; side-effect tools park at approval; read tools run inline. |
+| C4 | Checkpoints & resume | each completed step persisted; resume reconciles receipts and continues; interrupted runs are not auto-replayed. |
+| C5 | Task workspace | runs linked to a conversation workspace (reuse the sandbox per-session files): uploads, generated artifacts and receipts in one place. |
+| C6 | Scoped agent memory | tenant-scoped memory rows with personal/agent/shared visibility; user-visible, editable, deletable; deletion affects later runs. |
+| C7 | Schedules | recurring runs (reuse the connector scheduler pattern): cron + timezone, concurrency limit, budget, accountable initiating user; leases prevent double-claim. |
+| C8 | Budgets & cost ledger | per-run and per-schedule budget enforced in the gateway; run stops when exceeded. |
+
+All on our existing Postgres + FastAPI + model gateway. Delivered in the §20.4
+stages, each behind the disabled-by-default flag until its acceptance checks pass.
