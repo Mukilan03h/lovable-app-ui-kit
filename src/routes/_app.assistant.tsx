@@ -21,6 +21,7 @@ import {
   Mic,
   MessageSquarePlus,
   Paperclip,
+  PencilLine,
   RotateCcw,
   Search,
   Share2,
@@ -833,6 +834,7 @@ type TurnState = {
   artifactKind?: ArtifactKind;
   artifactId?: string;
   compute?: ComputeResult;
+  correction?: { correctionId: string; approvedBy: string; approvedAt: number };
 };
 type ComputeResult = {
   code: string;
@@ -903,6 +905,15 @@ function reduceEvent(prev: TurnState, ev: Record<string, unknown>): TurnState {
         ...prev,
         artifactKind: ev["kind"] as ArtifactKind,
         artifactId: String(ev["artifactId"]),
+      };
+    case "correction":
+      return {
+        ...prev,
+        correction: {
+          correctionId: String(ev["correctionId"]),
+          approvedBy: String(ev["approvedBy"] ?? ""),
+          approvedAt: Number(ev["approvedAt"] ?? 0),
+        },
       };
     case "compute":
       return {
@@ -977,8 +988,44 @@ function AnswerTurn({
 }) {
   const state = useTurn(turn, conversationId);
   const [focused, setFocused] = useState<number | null>(null);
+  const [correctOpen, setCorrectOpen] = useState(false);
+  const [correctDraft, setCorrectDraft] = useState("");
+  const [correctEvidence, setCorrectEvidence] = useState("");
+  const [correctSubmitting, setCorrectSubmitting] = useState(false);
   const done = state.done;
   const artifactKind = state.artifactKind ?? turn.artifact;
+  const answerText = state.paragraphs.map((p) => p.text).join("\n\n");
+
+  const openCorrection = () => {
+    setCorrectDraft(answerText);
+    setCorrectEvidence("");
+    setCorrectOpen(true);
+  };
+
+  const submitCorrection = async () => {
+    const correctedAnswer = correctDraft.trim();
+    if (!correctedAnswer) {
+      toast.error("Enter the corrected answer first");
+      return;
+    }
+    setCorrectSubmitting(true);
+    try {
+      const evidence = correctEvidence.trim();
+      const original = answerText.trim();
+      await api.submitCorrection({
+        query: turn.question,
+        correctedAnswer,
+        ...(original ? { originalAnswer: original } : {}),
+        ...(evidence ? { evidenceUrl: evidence } : {}),
+      });
+      toast("Correction submitted for review");
+      setCorrectOpen(false);
+    } catch {
+      toast.error("Couldn't submit the correction");
+    } finally {
+      setCorrectSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     if (!done || !onComplete) return;
@@ -1029,6 +1076,12 @@ function AnswerTurn({
       </div>
 
       {state.compute && <ComputePanel c={state.compute} />}
+
+      {state.correction && (
+        <Pill tone="success">
+          <ShieldCheck className="size-3" /> Verified by a knowledge owner
+        </Pill>
+      )}
 
       <div className="space-y-3 text-sm leading-relaxed">
         {state.paragraphs.length === 0 && state.streamingText && (
@@ -1122,7 +1175,73 @@ function AnswerTurn({
             >
               <FileText className="size-3.5" /> Copy with citations
             </button>
+            <button
+              onClick={openCorrection}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted"
+            >
+              <PencilLine className="size-3.5" /> Suggest a correction
+            </button>
           </div>
+          <AnimatePresence initial={false}>
+            {correctOpen && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="space-y-3 rounded-2xl border border-border bg-background/60 p-3">
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    <PencilLine className="size-3.5 text-brand" />
+                    Suggest a correction
+                    <span className="font-normal text-muted-foreground">
+                      — a knowledge owner reviews it before it goes live
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted-foreground">
+                      Corrected answer
+                    </label>
+                    <textarea
+                      value={correctDraft}
+                      onChange={(e) => setCorrectDraft(e.target.value)}
+                      rows={4}
+                      placeholder="What should the answer say instead?"
+                      className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 placeholder:text-muted-foreground"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted-foreground">
+                      Evidence URL <span className="font-normal">(optional)</span>
+                    </label>
+                    <input
+                      value={correctEvidence}
+                      onChange={(e) => setCorrectEvidence(e.target.value)}
+                      placeholder="Link to a source that backs this up"
+                      className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand/30 placeholder:text-muted-foreground"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => setCorrectOpen(false)}
+                      disabled={correctSubmitting}
+                      className="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void submitCorrection()}
+                      disabled={correctSubmitting || !correctDraft.trim()}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+                    >
+                      <Check className="size-3.5" />
+                      {correctSubmitting ? "Submitting…" : "Submit"}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
           <MessageToolbar />
         </motion.div>
       )}
