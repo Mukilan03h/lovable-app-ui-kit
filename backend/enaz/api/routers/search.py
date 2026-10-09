@@ -15,13 +15,23 @@ async def search(
     q: str = Query(..., min_length=1),
     sources: list[str] | None = Query(default=None),
     types: list[str] | None = Query(default=None),
+    documentSet: str | None = Query(default=None),
     k: int = Query(default=12, le=50),
     principal: Principal = Depends(require("search")),
     svc: Services = Depends(get_services),
 ) -> dict:
     principals = principal.principals
     async with svc.db.acquire(principal.tenant_id) as conn:
-        result = await svc.searcher.search(conn, q, principals, k=k, sources=sources, doc_types=types, per_doc=3)
+        connector_ids: list[str] | None = None
+        if documentSet:
+            rows = await conn.fetch(
+                "SELECT connector_id FROM document_set_connectors WHERE document_set_id = $1", documentSet
+            )
+            # An empty set scopes to nothing rather than everything.
+            connector_ids = [str(r["connector_id"]) for r in rows] or ["__none__"]
+        result = await svc.searcher.search(
+            conn, q, principals, k=k, sources=sources, doc_types=types, per_doc=3, connector_ids=connector_ids
+        )
         facet_rows = await conn.fetch(
             """SELECT d.source, count(*) AS n FROM documents d
                WHERE EXISTS (SELECT 1 FROM doc_acl a WHERE a.doc_id = d.id AND a.principal = ANY($1::text[]))

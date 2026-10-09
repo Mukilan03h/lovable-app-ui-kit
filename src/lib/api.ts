@@ -144,10 +144,11 @@ export async function apiMe(): Promise<{
 // ---- resource endpoints ---------------------------------------------------
 export const api = {
   // search
-  search: (q: string, params: { sources?: string[]; types?: string[] } = {}) => {
+  search: (q: string, params: { sources?: string[]; types?: string[]; documentSet?: string } = {}) => {
     const qs = new URLSearchParams({ q });
     (params.sources ?? []).forEach((s) => qs.append("sources", s));
     (params.types ?? []).forEach((t) => qs.append("types", t));
+    if (params.documentSet) qs.append("documentSet", params.documentSet);
     return apiGet<SearchResponse>(`/api/search?${qs.toString()}`);
   },
 

@@ -121,7 +121,7 @@ class DocumentIndex:
             return {}
         rows = await conn.fetch(
             """SELECT c.id, c.doc_id, c.ord, c.section, c.text, c.context, c.parent_text,
-                      d.title, d.source, d.url, d.path, d.doc_type, d.owner,
+                      d.title, d.source, d.url, d.path, d.doc_type, d.owner, d.connector_id,
                       extract(epoch FROM d.updated_at) AS updated_at, d.metadata
                FROM chunks c JOIN documents d ON d.id = c.doc_id
                WHERE c.id = ANY($1::uuid[])""",
@@ -132,6 +132,7 @@ class DocumentIndex:
             d = dict(r)
             d["id"] = str(d["id"])
             d["doc_id"] = str(d["doc_id"])
+            d["connector_id"] = str(d["connector_id"]) if d.get("connector_id") else None
             out[d["id"]] = d
         return out
 

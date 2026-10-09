@@ -145,6 +145,7 @@ class HybridSearcher:
         doc_types: list[str] | None = None,
         candidates: int = 60,
         per_doc: int = 2,
+        connector_ids: list[str] | None = None,
     ) -> SearchResult:
         started = time.perf_counter()
         if not principals:
@@ -172,6 +173,8 @@ class HybridSearcher:
             if sources and r["source"] not in sources:
                 continue
             if doc_types and r["doc_type"] not in doc_types:
+                continue
+            if connector_ids and r.get("connector_id") not in connector_ids:
                 continue
             hits.append(
                 Hit(

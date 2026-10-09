@@ -319,3 +319,13 @@ async def test_connector_sync_engine_tracks_index_attempts(client, services):
     assert len(rows) == 3
     assert [r["status"] for r in rows] == ["success", "success", "success"]
     assert rows[0]["new_docs"] == 2 and rows[2]["removed_docs"] == 1
+
+    # Re-index both docs so there is content to scope, then prove document-set
+    # scoping actually restricts retrieval to the set's connectors.
+    docs_state["docs"] = [("a", "Alpha", "alpha body one"), ("b", "Beta", "beta body two")]
+    await run_sync(services, tid, cid)
+    async with services.db.acquire(tid) as conn:
+        scoped = await services.searcher.search(conn, "alpha", ["public"], k=5, connector_ids=[cid])
+        empty = await services.searcher.search(conn, "alpha", ["public"], k=5, connector_ids=["__none__"])
+    assert scoped.hits and all(getattr(h, "doc_id", None) for h in scoped.hits)
+    assert empty.hits == []  # a set with no matching connector scopes to nothing
