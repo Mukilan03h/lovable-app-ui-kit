@@ -218,6 +218,12 @@ export const api = {
   updateArtifact: (id: string, body: { pinned?: boolean; shared?: string }) => apiSend(`/api/artifacts/${id}`, "PATCH", body),
   deleteArtifact: (id: string) => apiSend(`/api/artifacts/${id}`, "DELETE"),
 
+  // organizational discovery (entity pages, timeline, experts)
+  entityPage: (name: string, type = "entity") =>
+    apiGet<EntityPage>(`/api/entities/page?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`),
+  timeline: (q: string) => apiGet<TimelineResult>(`/api/timeline?q=${encodeURIComponent(q)}`),
+  experts: (q: string) => apiGet<ExpertsResult>(`/api/experts?q=${encodeURIComponent(q)}`),
+
   // work inbox
   inbox: () => apiGet<InboxResponse>("/api/inbox"),
 
@@ -355,6 +361,23 @@ export type ArtifactRow = {
   versions: number; sources: number; updatedAt: number; author: string;
 };
 export type ArtifactDetail = { id: string; title: string; kind: string; format: string; version: number; spec: Record<string, unknown>; versions: { version: number; note: string; created_at: number }[] };
+export type EntityRelated = { docId: string; title: string; source: string; url: string | null; updatedAt: number | null; snippet: string };
+export type EntityPage = {
+  name: string; type: string; confidence: number;
+  related: Record<string, EntityRelated[]>;
+  owners: { name: string; documents: number }[];
+  sources: { source: string; documents: number }[];
+  recent: { title: string; source: string; updatedAt: number | null; docId: string }[];
+  openWork: { id: string; status: string; task: string; createdAt: number | null }[];
+};
+export type TimelineResult = {
+  query: string; pointInTime: boolean; note: string;
+  entries: { docId: string; title: string; source: string; url: string | null; updatedAt: number | null; snippet: string; owner: string }[];
+};
+export type ExpertsResult = {
+  query: string; confidence: number; preparedQuestion: string; note: string;
+  experts: { name: string; score: number; topics: string[] }[];
+};
 export type InboxItem = {
   id: string; type: "approval" | "run" | "correction"; bucket: "needs_decision" | "running" | "completed" | "failed";
   title: string; detail: string; nextAction: string; tool?: string;

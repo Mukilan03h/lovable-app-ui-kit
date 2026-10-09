@@ -676,3 +676,25 @@ async def test_connected_artifact_freshness_and_refresh(client, services):
     assert acc.json()["version"] == 2
     after = (await client.get(f"/api/artifacts/{art_id}/freshness", headers=auth(admin))).json()
     assert after["stale"] is False
+
+
+async def test_discovery_entity_timeline_experts(client, services):
+    """Entity page, timeline and expert handoff aggregate permission-filtered results."""
+    admin = await token_for(client, services, "admin")
+
+    page = (await client.get("/api/entities/page", headers=auth(admin), params={"name": "security", "type": "project"})).json()
+    assert "related" in page and "owners" in page and "recent" in page and "openWork" in page
+
+    tl = (await client.get("/api/timeline", headers=auth(admin), params={"q": "security review"})).json()
+    assert "entries" in tl and tl["pointInTime"] is False
+    # Timeline is newest-first by updatedAt.
+    ts = [e["updatedAt"] or 0 for e in tl["entries"]]
+    assert ts == sorted(ts, reverse=True)
+
+    ex = (await client.get("/api/experts", headers=auth(admin), params={"q": "security review"})).json()
+    assert "experts" in ex and ex["preparedQuestion"] and "security review" in ex["preparedQuestion"]
+
+    # Permission filtering: a client with narrow access gets no more than admin.
+    client_tok = await token_for(client, services, "client")
+    ctl = (await client.get("/api/timeline", headers=auth(client_tok), params={"q": "security review"})).json()
+    assert len(ctl["entries"]) <= len(tl["entries"])
