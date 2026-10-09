@@ -572,9 +572,11 @@ context, which also lets an agent use the session's files via the code interpret
 | Multi-tenant isolation | ✅ Postgres **row-level security** (stronger than app-layer) |
 | Eval tooling | ✅ **in-product** golden-set gate (recall@k, citation rate) |
 
-Still missing / next: voice STT/TTS (UI present, provider pending) and multi-model
-side-by-side answers. Skills packages, the OpenAPI action builder, shared chats
-and the in-chat code-interpreter tool loop are now built (see §16).
+Still missing / next: voice STT/TTS (UI present, provider pending). Skills
+packages, the OpenAPI action builder, shared chats, the in-chat code-interpreter
+tool loop, multi-model side-by-side compare, and the Onyx-grade connector engine
+(credentials, index-attempt history, scheduled incremental indexing, pause/resume,
+document sets wired into search) are now built — see §16 and §18.
 
 ### 15.7 Parameters we had not optimized — and the tuning pass
 
@@ -677,3 +679,47 @@ app holds no per-process state that prevents it (sessions are JWT, cache and
 rate-limits use Redis when configured). The only real-world latency a user feels
 is the model's own streaming time, which is per-request and unaffected by how
 many others are online.
+
+---
+
+## 18. Connector engine (Onyx-grade)
+
+Connectors are no longer a catalog with a one-shot fetch; they are a managed
+indexing system modelled on Onyx's recent connector/credential/index-attempt
+architecture.
+
+- **Credentials, separate from connectors.** Secrets live in a `credentials`
+  table and are merged into a connector's config only at sync time. The API
+  returns which keys a credential holds, never their values. One credential can
+  back many connectors.
+- **Index attempts.** Every sync is a tracked `index_attempts` row: status
+  (in_progress / success / failed), trigger (manual / scheduled / initial),
+  per-category counts (new / updated / removed / total), timing and error. The
+  admin UI shows real indexing history, not a single status flag.
+- **Scheduled incremental indexing.** Each connector has a refresh frequency; a
+  background scheduler runs due connectors across tenants, advances a cursor, and
+  only the connectors' incremental fetch (e.g. RSS by entry date) re-reads new
+  content. Connectors can be paused and resumed.
+- **New/updated/removed classification + pruning.** The sync engine compares the
+  source against what is already indexed, so counts are accurate and documents
+  that vanished from the source are deleted.
+- **Document sets.** Connectors can be grouped into named document sets, and
+  search/answers can be scoped to a set (resolved to its connectors, enforced in
+  retrieval). An empty set scopes to nothing rather than everything.
+- **Live connectors.** Web crawl, GitHub, RSS/Atom (incremental), Sitemap, generic
+  REST/JSON, and any MCP server fetch real content; the broader catalog advertises
+  the rest with their config shape and the same `fetch()` contract to implement.
+
+Proven by an in-process integration test that drives the real engine against the
+database (new/updated/removed classification, incremental unchanged detection,
+pruning, recorded attempts, and document-set scoping) plus live verification of
+credentials, attempts, pause/resume, scheduling and document-set CRUD. Outbound
+fetch to arbitrary hosts is blocked by the demo environment's egress proxy, so
+external crawls can't complete here, but the engine and all persistence are
+exercised.
+
+Still open on connectors: bespoke OAuth flows and API clients for the
+token-gated SaaS sources (Slack/Confluence/Jira/Drive/Notion) — each is the same
+`fetch()` contract plus that source's auth; and group-based permission *sync*
+from those sources (ACL copy is in place; live group mirroring per source is the
+remaining enterprise piece).
