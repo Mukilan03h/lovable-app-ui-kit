@@ -61,25 +61,12 @@ class Database:
     # ---- migrations -------------------------------------------------------
 
     async def migrate(self) -> list[str]:
-        conn = await asyncpg.connect(self.admin_dsn)
-        applied: list[str] = []
-        try:
-            await conn.execute(
-                "CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz DEFAULT now())"
-            )
-            done = {r["version"] for r in await conn.fetch("SELECT version FROM schema_migrations")}
-            for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-                version = path.stem
-                if version in done:
-                    continue
-                sql = path.read_text().replace("{{EMBED_DIM}}", str(self.embedding_dim))
-                async with conn.transaction():
-                    await conn.execute(sql)
-                    await conn.execute("INSERT INTO schema_migrations (version) VALUES ($1)", version)
-                applied.append(version)
-        finally:
-            await conn.close()
-        return applied
+        """Run Alembic migrations to head (synchronous Alembic, off the event loop)."""
+        import asyncio
+
+        from .migrate import run_upgrade
+
+        return await asyncio.to_thread(run_upgrade, self.admin_dsn, self.embedding_dim)
 
     async def admin_execute(self, sql: str, *args: Any) -> None:
         conn = await asyncpg.connect(self.admin_dsn)
