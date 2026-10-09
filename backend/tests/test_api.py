@@ -565,3 +565,34 @@ async def test_durable_deny_finishes_without_side_effect(client, services):
     # No executed (done) receipt; the proposed one is marked denied.
     assert not any(rc["status"] == "done" for rc in done["receipts"])
     assert any(rc["status"] == "denied" for rc in done["receipts"])
+
+
+async def test_scoped_memory_crud_and_run_injection(client, services):
+    """Personal/agent/shared memory CRUD, and memory is gathered into agent runs."""
+    from enaz.run_engine import _gather_memory
+
+    admin = await token_for(client, services, "admin")
+    aid = await _make_agent(client, admin, name="Memo agent", tools=["Search"])
+
+    # Create one of each scope.
+    await client.post("/api/settings/memory", headers=auth(admin), json={"text": "prefers concise answers", "scope": "personal"})
+    await client.post("/api/settings/memory", headers=auth(admin), json={"text": "always cite the handbook", "scope": "agent", "agentId": aid})
+    await client.post("/api/settings/memory", headers=auth(admin), json={"text": "company fiscal year starts in April", "scope": "shared"})
+    off = await client.post("/api/settings/memory", headers=auth(admin), json={"text": "do not use this one", "scope": "shared", "useInRuns": False})
+
+    listed = (await client.get("/api/settings/memory", headers=auth(admin))).json()["memories"]
+    scopes = {m["scope"] for m in listed}
+    assert {"personal", "agent", "shared"} <= scopes
+
+    uid = (await client.get("/api/auth/me", headers=auth(admin))).json()["user"]["id"]
+    gathered = await _gather_memory(services, services._test_tenant, uid, aid)
+    assert "concise" in gathered and "handbook" in gathered and "fiscal year" in gathered
+    assert "do not use this one" not in gathered  # use_in_runs=false excluded
+
+    # Deleting a shared memory stops it influencing later runs.
+    await client.delete(f"/api/settings/memory/{off.json()['id']}", headers=auth(admin))
+    # Delete the fiscal-year one and confirm it's gone from the gather.
+    fy = next(m for m in listed if "fiscal year" in m["text"])
+    await client.delete(f"/api/settings/memory/{fy['id']}", headers=auth(admin))
+    gathered2 = await _gather_memory(services, services._test_tenant, uid, aid)
+    assert "fiscal year" not in gathered2

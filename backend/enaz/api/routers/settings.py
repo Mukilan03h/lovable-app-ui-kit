@@ -55,32 +55,62 @@ async def update_profile(body: ProfileBody, principal: Principal = Depends(authe
     return {"ok": True}
 
 
-# ---- memory ---------------------------------------------------------------
+# ---- memory (personal / agent / shared) -----------------------------------
 @router.get("/memory")
 async def get_memory(principal: Principal = Depends(authenticate), svc: Services = Depends(get_services)) -> dict:
+    # A user sees their own personal memory, every shared-workspace memory, and
+    # all agent memory (scoped to an agent, visible so they can curate it).
     async with svc.db.acquire(principal.tenant_id) as conn:
-        rows = await conn.fetch("SELECT id, text, source FROM memories WHERE user_id=$1 ORDER BY created_at DESC", principal.user.id)
-    return {"memories": [{"id": str(r["id"]), "text": r["text"], "source": r["source"]} for r in rows]}
+        rows = await conn.fetch(
+            """SELECT id, text, source, scope, agent_id, use_in_runs,
+                      extract(epoch FROM created_at) AS created_at
+               FROM memories
+               WHERE (scope='personal' AND user_id=$1) OR scope IN ('shared','agent')
+               ORDER BY created_at DESC""",
+            principal.user.id,
+        )
+    return {"memories": [
+        {"id": str(r["id"]), "text": r["text"], "source": r["source"], "scope": r["scope"],
+         "agentId": str(r["agent_id"]) if r["agent_id"] else None, "useInRuns": r["use_in_runs"],
+         "createdAt": r["created_at"]}
+        for r in rows
+    ]}
 
 
 class MemoryBody(BaseModel):
     text: str
+    scope: str = "personal"        # personal | agent | shared
+    agentId: str | None = None
+    useInRuns: bool = True
 
 
 @router.post("/memory")
 async def add_memory(body: MemoryBody, principal: Principal = Depends(authenticate), svc: Services = Depends(get_services)) -> dict:
+    scope = body.scope if body.scope in ("personal", "agent", "shared") else "personal"
+    # Only personal memory is tied to a user; agent/shared belong to the workspace.
+    user_id = principal.user.id if scope == "personal" else None
+    agent_id = body.agentId if scope == "agent" else None
     async with svc.db.acquire(principal.tenant_id) as conn:
         mid = await conn.fetchval(
-            "INSERT INTO memories (tenant_id,user_id,text) VALUES ($1,$2,$3) RETURNING id",
-            principal.tenant_id, principal.user.id, body.text,
+            "INSERT INTO memories (tenant_id,user_id,text,scope,agent_id,use_in_runs) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+            principal.tenant_id, user_id, body.text, scope, agent_id, body.useInRuns,
         )
-    return {"id": str(mid)}
+    return {"id": str(mid), "scope": scope}
 
 
 @router.delete("/memory/{memory_id}")
 async def delete_memory(memory_id: str, principal: Principal = Depends(authenticate), svc: Services = Depends(get_services)) -> dict:
+    # A user may delete their own personal memory; shared/agent memory is curated
+    # by reviewers (admin/manager). Deletion takes effect on subsequent runs.
+    reviewer = principal.user.role in ("admin", "manager")
     async with svc.db.acquire(principal.tenant_id) as conn:
-        await conn.execute("DELETE FROM memories WHERE id=$1 AND user_id=$2", memory_id, principal.user.id)
+        if reviewer:
+            await conn.execute("DELETE FROM memories WHERE id=$1", memory_id)
+        else:
+            await conn.execute(
+                "DELETE FROM memories WHERE id=$1 AND scope='personal' AND user_id=$2",
+                memory_id, principal.user.id,
+            )
     return {"ok": True}
 
 

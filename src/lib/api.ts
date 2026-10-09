@@ -248,8 +248,9 @@ export const api = {
   settings: () => apiGet<SettingsResponse>("/api/settings"),
   saveSettings: (settings: Record<string, unknown>) => apiSend("/api/settings", "PUT", { settings }),
   updateProfile: (body: { name?: string; title?: string }) => apiSend("/api/settings/profile", "PUT", body),
-  memory: () => apiGet<{ memories: { id: string; text: string; source: string }[] }>("/api/settings/memory"),
-  addMemory: (text: string) => apiSend("/api/settings/memory", "POST", { text }),
+  memory: () => apiGet<{ memories: MemoryRow[] }>("/api/settings/memory"),
+  addMemory: (body: string | { text: string; scope?: string; agentId?: string; useInRuns?: boolean }) =>
+    apiSend<{ id: string; scope: string }>("/api/settings/memory", "POST", typeof body === "string" ? { text: body } : body),
   deleteMemory: (id: string) => apiSend(`/api/settings/memory/${id}`, "DELETE"),
   shortcuts: () => apiGet<{ shortcuts: ShortcutRow[] }>("/api/settings/shortcuts"),
   addShortcut: (body: { command: string; prompt: string; shared?: boolean }) => apiSend("/api/settings/shortcuts", "POST", body),
@@ -364,6 +365,10 @@ export type AgentTestResult = {
   proposedChanges: { tool: string; summary: string }[];
   followedInstructions: { producedAnswer: boolean; stayedWithinSourceScope: boolean; scope: unknown };
   estimatedCost: number; note: string;
+};
+export type MemoryRow = {
+  id: string; text: string; source: string; scope: string; agentId: string | null;
+  useInRuns: boolean; createdAt: number;
 };
 export type JobRow = {
   id: string; status: string; task: string; agent: string | null; cost: number;

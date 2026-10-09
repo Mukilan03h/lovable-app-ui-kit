@@ -145,6 +145,9 @@ async def execute_job(svc, job: dict) -> str:
         principals = ["public"]
 
     instructions = agent["instructions"] or ""
+    memory = await _gather_memory(svc, tenant_id, job["user_id"], str(job["agent_id"]))
+    if memory:
+        instructions = (instructions + "\n\n" if instructions else "") + "Relevant memory:\n" + memory
     agent_sources = [s for s in _load(agent["sources"]) if isinstance(s, str)] or None
     allowed_tools = {t.lower() for t in _load(agent["tools"])}
     output = agent["output"]
@@ -286,6 +289,23 @@ async def resume_after_decision(svc, tenant_id: str, job_id: str, approval_id: s
     await _finish(svc, tenant_id, job_id, SUCCEEDED,
                   result={**result, "actionTaken": False, "denied": True}, cost=float(job.get("cost") or 0.0))
     return SUCCEEDED
+
+
+async def _gather_memory(svc, tenant_id: str, user_id: str | None, agent_id: str) -> str:
+    """Memory applicable to a run: the initiating user's personal memory, this
+    agent's memory, and shared-workspace memory — only entries marked use_in_runs.
+    Deleting a memory therefore stops it influencing later runs."""
+    async with svc.db.acquire(tenant_id) as conn:
+        rows = await conn.fetch(
+            """SELECT text, scope FROM memories
+               WHERE use_in_runs = true
+                 AND ( (scope='personal' AND user_id=$1)
+                       OR (scope='agent' AND agent_id=$2)
+                       OR scope='shared' )
+               ORDER BY scope, created_at DESC LIMIT 40""",
+            user_id, agent_id,
+        )
+    return "\n".join(f"- ({r['scope']}) {r['text']}" for r in rows)
 
 
 async def run_worker_once(svc) -> bool:
