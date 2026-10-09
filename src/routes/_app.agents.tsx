@@ -6,6 +6,7 @@ import {
   Bot,
   CalendarClock,
   Check,
+  FlaskConical,
   Globe,
   Lock,
   MessageSquare,
@@ -28,6 +29,7 @@ import {
   api,
   type ActionRow,
   type AgentRow,
+  type AgentTestResult,
   type ApprovalRow,
   type SkillRow,
 } from "@/lib/api";
@@ -107,6 +109,7 @@ function AgentsPage() {
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
   const [selected, setSelected] = useState<AgentRow | null>(null);
+  const [testing, setTesting] = useState<AgentRow | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -261,6 +264,24 @@ function AgentsPage() {
                   </div>
                   {!a.enabled && <Pill>Paused</Pill>}
                   <Out className="size-4 text-muted-foreground" />
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTesting(a);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTesting(a);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  >
+                    <FlaskConical className="size-3.5" /> Test
+                  </span>
                 </div>
                 <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">{a.description}</p>
                 <div className="mt-3 flex flex-wrap gap-1.5">
@@ -284,6 +305,10 @@ function AgentsPage() {
           })}
         </StaggerGroup>
       )}
+
+      <AnimatePresence>
+        {testing && <TestDialog agent={testing} onClose={() => setTesting(null)} />}
+      </AnimatePresence>
 
       <SkillsSection />
 
@@ -371,6 +396,202 @@ function AgentsPage() {
         )}
       </AnimatePresence>
     </PageTransition>
+  );
+}
+
+function CheckPill({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <Pill tone={ok ? "success" : "danger"}>
+      {ok ? <Check className="size-3" /> : <X className="size-3" />} {label}
+    </Pill>
+  );
+}
+
+function TestDialog({ agent, onClose }: { agent: AgentRow; onClose: () => void }) {
+  const [task, setTask] = useState("");
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<AgentTestResult | null>(null);
+
+  async function run() {
+    setRunning(true);
+    try {
+      const res = await api.testAgent(agent.id, task.trim() || undefined);
+      setResult(res);
+    } catch {
+      toast.error("Couldn't run the test. Check your connection and try again.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <motion.div
+      className="fixed inset-0 z-50 flex justify-end"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <div className="absolute inset-0 bg-foreground/40" onClick={onClose} />
+      <motion.aside
+        initial={{ x: 420 }}
+        animate={{ x: 0 }}
+        exit={{ x: 420 }}
+        transition={{ type: "spring", stiffness: 360, damping: 36 }}
+        className="relative flex h-full w-full max-w-md flex-col gap-5 overflow-y-auto bg-card p-6"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <FlaskConical className="size-3.5" /> Test mode
+            </p>
+            <h2 className="truncate text-xl font-semibold">{agent.name}</h2>
+          </div>
+          <button onClick={onClose} aria-label="Close">
+            <X className="size-5" />
+          </button>
+        </div>
+
+        <div className="flex items-start gap-2 rounded-2xl border border-info/40 bg-info/10 px-3 py-2 text-xs text-info">
+          <Lock className="mt-0.5 size-3.5 shrink-0" />
+          <span>Dry run — read-only, no side effects. Nothing is sent to live tools.</span>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Sample task (optional)
+          </label>
+          <textarea
+            value={task}
+            onChange={(e) => setTask(e.target.value)}
+            placeholder="e.g. Summarize last quarter's support escalations"
+            rows={3}
+            className={`${inputClass} resize-y`}
+          />
+          <div className="flex justify-end">
+            <button
+              onClick={run}
+              disabled={running}
+              className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+            >
+              <FlaskConical className="size-4" /> {running ? "Running…" : "Run dry run"}
+            </button>
+          </div>
+        </div>
+
+        {running && !result && (
+          <div className="space-y-3">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-16 animate-pulse rounded-2xl border border-border bg-muted/40"
+              />
+            ))}
+          </div>
+        )}
+
+        {result && (
+          <motion.div variants={fadeUp} initial="hidden" animate="show" className="space-y-5">
+            <section className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Sources accessed
+              </p>
+              {result.sourcesAccessed.length === 0 ? (
+                <Pill>all permitted sources</Pill>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {result.sourcesAccessed.map((s) => (
+                    <Pill key={s} tone="info">
+                      <Globe className="size-3" /> {s}
+                    </Pill>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Proposed tools
+              </p>
+              {result.proposedTools.length === 0 ? (
+                <p className="text-sm text-muted-foreground">none</p>
+              ) : (
+                <div className="space-y-2">
+                  {result.proposedTools.map((t, i) => (
+                    <div
+                      key={`${t.tool}-${i}`}
+                      className="flex flex-wrap items-center gap-2 rounded-2xl border border-border px-3 py-2"
+                    >
+                      <span className="flex items-center gap-1.5 text-sm font-medium">
+                        <Wrench className="size-3.5 text-muted-foreground" /> {t.tool}
+                      </span>
+                      {t.wouldCall && (
+                        <Pill tone="warning">
+                          <ShieldAlert className="size-3" /> would call
+                        </Pill>
+                      )}
+                      {!t.verifiedAgainstLive && (
+                        <span className="text-xs text-muted-foreground">
+                          not verified against live
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Proposed changes
+              </p>
+              {result.proposedChanges.length === 0 ? (
+                <p className="text-sm text-muted-foreground">none</p>
+              ) : (
+                <ul className="space-y-2">
+                  {result.proposedChanges.map((c, i) => (
+                    <li
+                      key={`${c.tool}-${i}`}
+                      className="rounded-2xl border border-border px-3 py-2 text-sm"
+                    >
+                      <span className="font-medium">{c.tool}</span>
+                      <span className="text-muted-foreground"> — {c.summary}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Followed instructions
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                <CheckPill ok={result.followedInstructions.producedAnswer} label="Produced answer" />
+                <CheckPill
+                  ok={result.followedInstructions.stayedWithinSourceScope}
+                  label="Stayed within source scope"
+                />
+              </div>
+            </section>
+
+            <section className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Sample answer
+              </p>
+              <p className="rounded-2xl border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                {result.sampleAnswer}
+              </p>
+            </section>
+
+            <div className="flex items-center justify-between border-t border-border pt-3 text-sm">
+              <span className="text-muted-foreground">Estimated cost</span>
+              <span className="font-semibold tabular-nums">${result.estimatedCost.toFixed(4)}</span>
+            </div>
+            {result.note && <p className="text-xs text-muted-foreground">{result.note}</p>}
+          </motion.div>
+        )}
+      </motion.aside>
+    </motion.div>
   );
 }
 
