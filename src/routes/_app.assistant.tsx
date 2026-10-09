@@ -22,6 +22,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Terminal,
   ThumbsDown,
   ThumbsUp,
   Volume2,
@@ -110,6 +111,7 @@ const stepIcon: Record<Step["tool"], typeof Search> = {
   graph: GitBranch,
   verify: ShieldCheck,
   artifact: Wand2,
+  code: Terminal,
 };
 
 const efforts = ["Low", "Medium", "High"] as const;
@@ -155,7 +157,27 @@ function AssistantPage() {
   const [effort, setEffort] = useState<(typeof efforts)[number]>("Medium");
   const [web, setWeb] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversationId] = useState(() =>
+    typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `c-${Date.now()}`,
+  );
+  const [sessionFiles, setSessionFiles] = useState<string[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+
+  const onUpload = async (files: FileList | null) => {
+    if (!files?.length) return;
+    for (const file of Array.from(files)) {
+      try {
+        const r = await api.uploadConversationFile(conversationId, file);
+        setSessionFiles((s) => (s.includes(r.name) ? s : [...s, r.name]));
+        toast(`Added ${r.name} to this chat`, {
+          description: r.extracted ? "Text extracted · the assistant can read and run code on it" : "Available to the code interpreter",
+        });
+      } catch {
+        toast.error(`Couldn't upload ${file.name}`);
+      }
+    }
+  };
 
   const send = (text: string, kind?: ArtifactKind) => {
     const q = text.trim();
@@ -322,7 +344,12 @@ function AssistantPage() {
           ) : (
             <div className="mx-auto max-w-3xl space-y-8">
               {turns.map((t) => (
-                <AnswerTurn key={t.id} turn={t} onGenerate={(k) => send(t.question, k)} />
+                <AnswerTurn
+                  key={t.id}
+                  turn={t}
+                  conversationId={conversationId}
+                  onGenerate={(k) => send(t.question, k)}
+                />
               ))}
               <div ref={endRef} />
             </div>
@@ -373,11 +400,35 @@ function AssistantPage() {
                 placeholder="Ask anything, or “make a deck about…”"
                 className="w-full resize-none bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground"
               />
+              {sessionFiles.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pb-1">
+                  {sessionFiles.map((f) => (
+                    <span
+                      key={f}
+                      className="inline-flex items-center gap-1 rounded-full border border-brand/40 bg-brand/8 px-2 py-0.5 text-[11px] text-brand"
+                    >
+                      <FileText className="size-3" /> {f}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-1.5">
+                <input
+                  ref={fileInput}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    void onUpload(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
                 <button
                   type="button"
+                  onClick={() => fileInput.current?.click()}
                   className="grid size-8 place-items-center rounded-xl hover:bg-muted"
                   aria-label="Attach file"
+                  title="Attach a file to this chat — the assistant can read it and run code on it"
                 >
                   <Paperclip className="size-4 text-muted-foreground" />
                 </button>
@@ -508,6 +559,16 @@ type TurnState = {
   summary: string;
   artifactKind?: ArtifactKind;
   artifactId?: string;
+  compute?: ComputeResult;
+};
+type ComputeResult = {
+  code: string;
+  stdout: string;
+  stderr: string;
+  ok: boolean;
+  images: { name: string; dataUrl: string }[];
+  files: string[];
+  networkIsolated: boolean;
 };
 
 const relTime = (epoch?: number) => {
@@ -570,6 +631,19 @@ function reduceEvent(prev: TurnState, ev: Record<string, unknown>): TurnState {
         artifactKind: ev["kind"] as ArtifactKind,
         artifactId: String(ev["artifactId"]),
       };
+    case "compute":
+      return {
+        ...prev,
+        compute: {
+          code: String(ev["code"] ?? ""),
+          stdout: String(ev["stdout"] ?? ""),
+          stderr: String(ev["stderr"] ?? ""),
+          ok: Boolean(ev["ok"]),
+          images: ((ev["images"] as { name: string; dataUrl: string }[]) ?? []),
+          files: ((ev["files"] as string[]) ?? []),
+          networkIsolated: Boolean(ev["networkIsolated"]),
+        },
+      };
     case "done":
       return {
         ...prev,
@@ -593,7 +667,7 @@ const EMPTY: TurnState = {
   summary: "Working…",
 };
 
-function useTurn(turn: Turn): TurnState {
+function useTurn(turn: Turn, conversationId: string): TurnState {
   const [state, setState] = useState<TurnState>(EMPTY);
 
   useEffect(() => {
@@ -605,6 +679,7 @@ function useTurn(turn: Turn): TurnState {
         mode: turn.mode,
         artifact: turn.artifact,
         sources: turn.scope.length ? turn.scope : undefined,
+        conversationId,
       },
       (ev) => setState((prev) => reduceEvent(prev, ev)),
       ctrl.signal,
@@ -616,8 +691,16 @@ function useTurn(turn: Turn): TurnState {
   return state;
 }
 
-function AnswerTurn({ turn, onGenerate }: { turn: Turn; onGenerate: (k: ArtifactKind) => void }) {
-  const state = useTurn(turn);
+function AnswerTurn({
+  turn,
+  onGenerate,
+  conversationId,
+}: {
+  turn: Turn;
+  onGenerate: (k: ArtifactKind) => void;
+  conversationId: string;
+}) {
+  const state = useTurn(turn, conversationId);
   const [focused, setFocused] = useState<number | null>(null);
   const done = state.done;
   const artifactKind = state.artifactKind ?? turn.artifact;
@@ -659,6 +742,8 @@ function AnswerTurn({ turn, onGenerate }: { turn: Turn; onGenerate: (k: Artifact
           </AnimatePresence>
         </ol>
       </div>
+
+      {state.compute && <ComputePanel c={state.compute} />}
 
       <div className="space-y-3 text-sm leading-relaxed">
         {state.paragraphs.length === 0 && state.streamingText && (
@@ -757,6 +842,64 @@ function AnswerTurn({ turn, onGenerate }: { turn: Turn; onGenerate: (k: Artifact
         </motion.div>
       )}
     </div>
+  );
+}
+
+/** Shows what the in-chat code interpreter ran and produced (stdout + charts). */
+function ComputePanel({ c }: { c: ComputeResult }) {
+  const [showCode, setShowCode] = useState(false);
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="overflow-hidden rounded-2xl border border-border bg-background/60"
+    >
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs">
+        <Terminal className="size-3.5 text-brand" />
+        <span className="font-medium">Code interpreter</span>
+        <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-semibold", c.ok ? "bg-success/12 text-success" : "bg-destructive/12 text-destructive")}>
+          {c.ok ? "ran" : "error"}
+        </span>
+        {c.networkIsolated && (
+          <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+            <ShieldCheck className="size-3" /> network-isolated
+          </span>
+        )}
+        <button
+          onClick={() => setShowCode((s) => !s)}
+          className="ml-auto rounded-md px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted"
+        >
+          {showCode ? "Hide code" : "View code"}
+        </button>
+      </div>
+      {showCode && (
+        <pre className="max-h-64 overflow-auto border-b border-border bg-muted/40 px-3 py-2 text-[11px] leading-relaxed">
+          <code>{c.code}</code>
+        </pre>
+      )}
+      {c.stdout && (
+        <pre className="max-h-56 overflow-auto px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          <code>{c.stdout}</code>
+        </pre>
+      )}
+      {!c.ok && c.stderr && (
+        <pre className="max-h-40 overflow-auto border-t border-border px-3 py-2 text-[11px] leading-relaxed text-destructive">
+          <code>{c.stderr}</code>
+        </pre>
+      )}
+      {c.images.length > 0 && (
+        <div className="flex flex-wrap gap-2 p-3">
+          {c.images.map((img) => (
+            <img
+              key={img.name}
+              src={img.dataUrl}
+              alt={img.name}
+              className="max-h-72 rounded-xl border border-border"
+            />
+          ))}
+        </div>
+      )}
+    </motion.div>
   );
 }
 

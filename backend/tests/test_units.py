@@ -71,6 +71,36 @@ async def test_laya_default_follows_workspace_setting():
     assert route.by == "laya-system1" and route.intent == "lookup"
 
 
+def test_compute_intent_detection():
+    """The code interpreter engages only with data files + a compute-shaped ask."""
+    from types import SimpleNamespace
+
+    from enaz.answer.compute import data_files, wants_compute
+
+    csv = SimpleNamespace(name="sales.csv", size=100, is_image=False)
+    png = SimpleNamespace(name="chart.png", size=100, is_image=True)
+    assert data_files([csv, png]) == [csv]
+    assert wants_compute("what is the average revenue?", [csv]) is True
+    assert wants_compute("plot the trend", [csv]) is True
+    assert wants_compute("summarise sales.csv", [csv]) is True  # names the file
+    assert wants_compute("average revenue", []) is False        # no data file
+    assert wants_compute("hello there", [csv]) is False         # no compute intent
+
+
+async def test_compute_runs_offline_over_a_csv(tmp_path):
+    """End to end: offline code generation + sandbox run profiles a CSV and charts it."""
+    from enaz.answer.compute import run_compute
+    from enaz.llm.gateway import CostLedger
+    from enaz.sandbox.workspace import Workspace
+
+    ws = Workspace(tmp_path, "t1", "conv1")
+    ws.write_text("sales.csv", "month,revenue\nJan,120\nFeb,150\nMar,200\n")
+    outcome = await run_compute(LLMGateway(offline=True), ws, "total revenue and chart it", ws.list(), CostLedger())
+    assert outcome.ran and outcome.result is not None and outcome.result.ok()
+    assert "revenue" in outcome.summary
+    assert any(f.endswith(".png") for f in outcome.new_files)
+
+
 def test_verifier_flags_unsupported_claims():
     emb = HashingEmbedder(256)
     ledger = Ledger.from_hits([

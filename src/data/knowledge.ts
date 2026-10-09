@@ -145,7 +145,7 @@ export const docById = (id: string) => docs.find((d) => d.id === id);
 export type Step = {
   label: string;
   detail: string;
-  tool: "plan" | "search" | "read" | "graph" | "verify" | "artifact";
+  tool: "plan" | "search" | "read" | "graph" | "verify" | "artifact" | "code";
 };
 
 export type ArtifactKind = "slides" | "doc" | "sheet";

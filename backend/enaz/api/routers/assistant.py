@@ -53,7 +53,7 @@ async def ask(
     events = svc.answers.answer(
         principal.tenant_id, principals, ak, body.query,
         mode=body.mode, sources=body.sources, user_id=principal.user.id,
-        wants_artifact=body.artifact, system1=system1,
+        wants_artifact=body.artifact, system1=system1, conversation_id=body.conversationId,
     )
     return StreamingResponse(
         _sse(events),

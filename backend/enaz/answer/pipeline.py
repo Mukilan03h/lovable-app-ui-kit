@@ -20,6 +20,8 @@ from ..decision.router import DecisionRouter, Route
 from ..llm.gateway import CostLedger, LLMGateway, price_of
 from ..retrieval.embeddings import Embedder
 from ..retrieval.search import Hit, HybridSearcher
+from ..sandbox.workspace import Workspace
+from .compute import run_compute, wants_compute
 from .ledger import Ledger, parse_paragraphs, verify
 
 ANSWER_SYSTEM = (
@@ -76,6 +78,7 @@ class AnswerService:
         wants_artifact: str | None = None,
         allow_cache: bool = True,
         system1: bool | None = None,
+        conversation_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         started = time.perf_counter()
         ledger_cost = CostLedger()
@@ -84,6 +87,49 @@ class AnswerService:
         route = await self.router.classify(query, mode, wants_artifact, system1=system1)
         ledger_cost.cost += getattr(route, "router_cost", 0.0)
         yield {"type": "route", "route": route.public()}
+
+        # In-chat code interpreter: if the session has data files and the question
+        # needs computation, run Python over the workspace and fold the result in.
+        compute_note = ""
+        compute_ran = False
+        if conversation_id:
+            try:
+                ws = Workspace(self.settings.data_dir, tenant_id, conversation_id)
+                files = ws.list()
+            except Exception:  # noqa: BLE001
+                files = []
+            if files and wants_compute(query, files):
+                outcome = await run_compute(self.llm, ws, query, files, ledger_cost)
+                if outcome.ran and outcome.result is not None:
+                    compute_ran = True
+                    yield {
+                        "type": "step", "tool": "code", "label": "Ran code interpreter",
+                        "detail": f"{len(files)} session file(s) · {outcome.result.duration_ms} ms"
+                        + ("" if outcome.result.network_isolated else " · no net-isolation"),
+                    }
+                    yield {
+                        "type": "compute",
+                        "code": outcome.code,
+                        "stdout": (outcome.result.stdout or "")[:4000],
+                        "stderr": (outcome.result.stderr or "")[-1500:],
+                        "ok": outcome.result.ok(),
+                        "images": outcome.images,
+                        "files": outcome.new_files,
+                        "networkIsolated": outcome.result.network_isolated,
+                    }
+                    if outcome.new_files:
+                        async with self.db.acquire(tenant_id) as conn:
+                            for name in outcome.new_files:
+                                size = (ws.root / name).stat().st_size if (ws.root / name).is_file() else 0
+                                await conn.execute(
+                                    """INSERT INTO session_files (tenant_id, conversation_id, name, size, source)
+                                       VALUES ($1,$2,$3,$4,'generated')
+                                       ON CONFLICT (conversation_id, name) DO UPDATE SET size=excluded.size""",
+                                    tenant_id, conversation_id, name, size,
+                                )
+                    compute_note = outcome.summary
+        # Computed answers depend on session files, so never serve them from cache.
+        allow_cache = allow_cache and not compute_ran
 
         if allow_cache and route.intent in ("lookup", "question") and not route.artifact:
             cached = await self.cache.get(tenant_id, acl_key, qvec)
@@ -110,9 +156,10 @@ class AnswerService:
             return event
 
         if route.path == "quick":
-            gen = self._quick(tenant_id, principals, query, route, ledger_cost, sources)
+            gen = self._quick(tenant_id, principals, query, route, ledger_cost, sources, compute_note)
         else:
-            gen = self._research(tenant_id, principals, query, route, ledger_cost, sources, user_id)
+            gen = self._research(tenant_id, principals, query, route, ledger_cost, sources, user_id,
+                                 compute_note=compute_note)
 
         confidence = 0.0
         answered = True
@@ -144,7 +191,7 @@ class AnswerService:
 
     # ---- quick path -------------------------------------------------------
 
-    async def _quick(self, tenant_id, principals, query, route, cost, sources) -> AsyncIterator[dict[str, Any]]:
+    async def _quick(self, tenant_id, principals, query, route, cost, sources, compute_note: str = "") -> AsyncIterator[dict[str, Any]]:
         yield {"type": "step", "tool": "search", "label": "Searched knowledge", "detail": "hybrid retrieval"}
         async with self.db.acquire(tenant_id) as conn:
             result = await self.searcher.search(conn, query, principals, k=8, sources=sources)
@@ -158,11 +205,20 @@ class AnswerService:
             yield {"type": "step", "tool": "plan", "label": "Escalated to deep research", "detail": "low confidence"}
             route.path = "agent"
             route.model = self.settings.model_deep
-            async for e in self._research(tenant_id, principals, query, route, cost, sources, None, prefetched=result.hits):
+            async for e in self._research(tenant_id, principals, query, route, cost, sources, None,
+                                          prefetched=result.hits, compute_note=compute_note):
                 yield e
             return
 
         if not result.hits:
+            if compute_note:
+                # No documents, but the code interpreter produced a result — answer from it.
+                ledger = Ledger.from_hits([])
+                async for e in self._synthesize(query, ledger, route, cost, ANSWER_SYSTEM,
+                                                max_tokens=1000, effort=route.effort, compute_note=compute_note):
+                    yield e
+                yield {"type": "_meta", "confidence": 0.6, "answered": True}
+                return
             yield {"type": "answer", "text": "I couldn't find anything you have access to that answers this.",
                    "paragraphs": [{"text": "I couldn't find anything you have access to that answers this.", "cites": []}]}
             yield {"type": "sources", "sources": []}
@@ -170,14 +226,16 @@ class AnswerService:
             return
 
         ledger = Ledger.from_hits(result.hits)
-        async for e in self._synthesize(query, ledger, route, cost, ANSWER_SYSTEM, max_tokens=1200, effort=route.effort):
+        async for e in self._synthesize(query, ledger, route, cost, ANSWER_SYSTEM, max_tokens=1200,
+                                        effort=route.effort, compute_note=compute_note):
             yield e
         yield {"type": "_meta", "confidence": result.confidence, "answered": True}
 
     # ---- research path ----------------------------------------------------
 
     async def _research(
-        self, tenant_id, principals, query, route, cost, sources, user_id, prefetched: list[Hit] | None = None
+        self, tenant_id, principals, query, route, cost, sources, user_id, prefetched: list[Hit] | None = None,
+        compute_note: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         subquestions = await self._plan(query, cost)
         yield {"type": "step", "tool": "plan", "label": "Planned research",
@@ -209,6 +267,13 @@ class AnswerService:
                    "detail": ", ".join(owners[:3])}
 
         if not merged:
+            if compute_note:
+                ledger = Ledger.from_hits([])
+                async for e in self._synthesize(query, ledger, route, cost, RESEARCH_SYSTEM,
+                                                max_tokens=1400, effort="high", compute_note=compute_note):
+                    yield e
+                yield {"type": "_meta", "confidence": 0.6, "answered": True}
+                return
             yield {"type": "answer", "text": "I couldn't find enough in your sources to research this.",
                    "paragraphs": [{"text": "I couldn't find enough in your sources to research this.", "cites": []}]}
             yield {"type": "sources", "sources": []}
@@ -217,7 +282,7 @@ class AnswerService:
 
         ledger = Ledger.from_hits(merged)
         async for e in self._synthesize(query, ledger, route, cost, RESEARCH_SYSTEM, max_tokens=2600,
-                                        effort="high", include_parent=True):
+                                        effort="high", include_parent=True, compute_note=compute_note):
             yield e
 
         if route.artifact:
@@ -235,15 +300,27 @@ class AnswerService:
 
     async def _synthesize(
         self, query, ledger: Ledger, route: Route, cost: CostLedger, system: str,
-        *, max_tokens: int, effort: str, include_parent: bool = False
+        *, max_tokens: int, effort: str, include_parent: bool = False, compute_note: str = ""
     ) -> AsyncIterator[dict[str, Any]]:
+        evidence = ledger.prompt_block(include_parent)
+        compute_block = (
+            f"\n\nComputed results from the code interpreter (ran over the session's files; "
+            f"treat these numbers as ground truth and reference them directly):\n{compute_note}\n"
+            if compute_note else ""
+        )
         prompt = (
-            f"Question: {query}\n\nEvidence:\n{ledger.prompt_block(include_parent)}\n\n"
+            f"Question: {query}\n\nEvidence:\n{evidence}{compute_block}\n\n"
             "Write the answer now, citing sources with [n]."
         )
-        result = await self.llm.complete(route.model, system, prompt, effort=effort, max_tokens=max_tokens)
-        cost.add(result)
-        answer = result.text.strip() or "I couldn't find anything you have access to that answers this."
+        if compute_note and self.llm.offline:
+            # Offline: the extractive engine keys on [n] evidence markers and would
+            # ignore the computed block, so present the computed result directly and
+            # append any supporting document sentence the engine can ground.
+            answer = _offline_compute_answer(self.llm, query, compute_note, prompt, system)
+        else:
+            result = await self.llm.complete(route.model, system, prompt, effort=effort, max_tokens=max_tokens)
+            cost.add(result)
+            answer = result.text.strip() or "I couldn't find anything you have access to that answers this."
 
         # Stream the answer in word batches for a live feel (offline or online).
         words = answer.split(" ")
@@ -293,3 +370,24 @@ class AnswerService:
                 cost.input_tokens, cost.output_tokens, cost.cost, baseline, latency_ms,
                 float(confidence), answered, cached,
             )
+
+
+def _offline_compute_answer(llm: LLMGateway, query: str, compute_note: str, prompt: str, system: str) -> str:
+    """Grounded answer for offline mode when the code interpreter produced a result.
+
+    Leads with the computed figures (ground truth from the sandbox), then appends
+    the best supporting document sentence the extractive engine can cite, if any.
+    """
+    lines = [ln.rstrip() for ln in compute_note.splitlines() if ln.strip()]
+    head = "\n".join(lines[:12])
+    answer = (
+        "Here is what the code interpreter computed over the files in this session:\n\n"
+        f"{head}\n\n"
+        "These figures come from running Python directly on your session files, so they "
+        "reflect the current data rather than a retrieved snapshot."
+    )
+    # If there is retrievable document evidence, add one grounded, cited sentence.
+    extractive = llm._offline_complete("offline", system, prompt, None).text.strip()  # noqa: SLF001
+    if extractive and "could not find" not in extractive.lower() and "[" in extractive:
+        answer += "\n\nSupporting context from your documents: " + extractive
+    return answer
