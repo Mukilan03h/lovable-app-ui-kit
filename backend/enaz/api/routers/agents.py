@@ -72,6 +72,9 @@ async def run_agent(agent_id: str, body: RunRequest, principal: Principal = Depe
         agent = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id)
     if not agent:
         raise HTTPException(404, "Agent not found")
+    # Stage 1 enforcement: a disabled agent cannot run.
+    if not agent["enabled"]:
+        raise HTTPException(409, "This agent is disabled")
 
     task = body.task or f"Run the '{agent['name']}' task: {agent['description']}"
     output = agent["output"]
@@ -79,6 +82,14 @@ async def run_agent(agent_id: str, body: RunRequest, principal: Principal = Depe
     principals = principal.principals
     tenant_id = principal.tenant_id
     user_id = principal.user.id
+    # The agent's own saved instructions and source scope are enforced server-side.
+    # Source scope is a restriction layered on top of the requester's ACL — retrieval
+    # already intersects with what this user may read, so the effective scope is the
+    # intersection of the two and an agent can never widen a user's access.
+    instructions = agent["instructions"] or ""
+    agent_sources = _load(agent["sources"]) if agent["sources"] is not None else []
+    run_sources = [s for s in agent_sources if isinstance(s, str)] or None
+    allowed_tools = {t.lower() for t in _load(agent["tools"])}
 
     async def stream() -> AsyncIterator[bytes]:
         run_id = new_uuid()
@@ -92,24 +103,31 @@ async def run_agent(agent_id: str, body: RunRequest, principal: Principal = Depe
         cost = 0.0
         status = "succeeded"
         try:
+            if run_sources:
+                yield _ev({"type": "step", "tool": "plan", "label": "Scoped to agent sources",
+                           "detail": ", ".join(run_sources)})
             async for event in svc.answers.answer(
                 tenant_id, principals, acl_key(principals), task,
                 mode="research", user_id=user_id, wants_artifact=wants_artifact, allow_cache=False,
+                sources=run_sources, extra_instructions=instructions,
             ):
                 if event.get("type") == "done":
                     cost = event.get("cost", 0.0)
                 yield _ev(event)
-            # Side-effect agents stop at an approval instead of acting.
-            tools = _load(agent["tools"])
-            if any(t.lower() in ("slack", "jira", "salesforce", "email", "zendesk") for t in tools) and output == "answer":
+            # Side-effect agents stop at an approval instead of acting — and only for a
+            # tool the agent is actually granted. A side-effect tool NOT in the agent's
+            # allowlist is denied server-side rather than silently used.
+            SIDE_EFFECT = {"slack", "jira", "salesforce", "email", "zendesk"}
+            granted_side_effects = [t for t in allowed_tools if t in SIDE_EFFECT]
+            if granted_side_effects and output == "answer":
+                tool = granted_side_effects[0]
                 approval_id = new_uuid()
                 async with svc.db.acquire(tenant_id) as conn:
                     await conn.execute(
                         "INSERT INTO approvals (id,tenant_id,run_id,user_id,tool,args) VALUES ($1,$2,$3,$4,$5,$6)",
-                        approval_id, tenant_id, run_id, user_id, tools[0] if tools else "action",
-                        json.dumps({"summary": task}),
+                        approval_id, tenant_id, run_id, user_id, tool, json.dumps({"summary": task}),
                     )
-                yield _ev({"type": "approval", "approvalId": approval_id, "tool": tools[0] if tools else "action"})
+                yield _ev({"type": "approval", "approvalId": approval_id, "tool": tool})
                 status = "needs_approval"
         except Exception as exc:  # noqa: BLE001
             status = "failed"

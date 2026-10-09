@@ -193,6 +193,43 @@ async def test_agents_list_and_create(client, services):
     assert any(a["name"] == "Test agent" for a in listed.json()["agents"])
 
 
+async def test_agent_stage1_enforcement(client, services):
+    """Stage 1: enabled status, source scope and tool allowlist are enforced server-side."""
+    token = await token_for(client, services, "admin")
+
+    async def make(name, **extra):
+        r = await client.post("/api/agents", headers=auth(token),
+                              json={"name": name, "description": "research the PTO policy", "output": "answer", **extra})
+        return r.json()["id"]
+
+    # 1) A disabled agent cannot run.
+    aid = await make("Disabled agent", tools=["Search"])
+    async with services.db.acquire(services._test_tenant) as conn:
+        await conn.execute("UPDATE agents SET enabled=false WHERE id=$1", aid)
+    denied = await client.post(f"/api/agents/{aid}/run", headers=auth(token), json={})
+    assert denied.status_code == 409
+
+    # 2) Two agents with different source scopes behave differently over the same task.
+    broad = await make("Broad", sources=[])                 # all sources the user can read
+    narrow = await make("Narrow", sources=["nonexistent_source"])  # scoped to nothing real
+    broad_ev = await read_sse(client, f"/api/agents/{broad}/run", auth(token), {"task": "what is the PTO policy"})
+    narrow_ev = await read_sse(client, f"/api/agents/{narrow}/run", auth(token), {"task": "what is the PTO policy"})
+    broad_sources = next((e for e in broad_ev if e.get("type") == "sources"), {"sources": []})
+    narrow_sources = next((e for e in narrow_ev if e.get("type") == "sources"), {"sources": []})
+    assert len(broad_sources["sources"]) > 0
+    assert len(narrow_sources["sources"]) == 0  # scope restricts retrieval to nothing
+    assert any(e.get("label") == "Scoped to agent sources" for e in narrow_ev)
+
+    # 3) Tool allowlist gates side effects: a granted side-effect tool stops at an approval…
+    granted = await make("Jira agent", tools=["Search", "Jira"])
+    ev = await read_sse(client, f"/api/agents/{granted}/run", auth(token), {"task": "summarise"})
+    assert any(e.get("type") == "approval" and e.get("tool") == "jira" for e in ev)
+    # …while an agent without any granted side-effect tool never proposes one.
+    readonly = await make("Readonly agent", tools=["Search"])
+    ev2 = await read_sse(client, f"/api/agents/{readonly}/run", auth(token), {"task": "summarise"})
+    assert not any(e.get("type") == "approval" for e in ev2)
+
+
 async def test_tenant_isolation(client, services):
     """A token from this tenant must never read another tenant's data."""
     admin = await token_for(client, services, "admin")

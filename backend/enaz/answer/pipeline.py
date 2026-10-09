@@ -79,6 +79,7 @@ class AnswerService:
         allow_cache: bool = True,
         system1: bool | None = None,
         conversation_id: str | None = None,
+        extra_instructions: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         started = time.perf_counter()
         ledger_cost = CostLedger()
@@ -156,10 +157,11 @@ class AnswerService:
             return event
 
         if route.path == "quick":
-            gen = self._quick(tenant_id, principals, query, route, ledger_cost, sources, compute_note)
+            gen = self._quick(tenant_id, principals, query, route, ledger_cost, sources, compute_note,
+                              extra_instructions)
         else:
             gen = self._research(tenant_id, principals, query, route, ledger_cost, sources, user_id,
-                                 compute_note=compute_note)
+                                 compute_note=compute_note, extra_instructions=extra_instructions)
 
         confidence = 0.0
         answered = True
@@ -234,7 +236,8 @@ class AnswerService:
 
     # ---- quick path -------------------------------------------------------
 
-    async def _quick(self, tenant_id, principals, query, route, cost, sources, compute_note: str = "") -> AsyncIterator[dict[str, Any]]:
+    async def _quick(self, tenant_id, principals, query, route, cost, sources, compute_note: str = "",
+                     extra_instructions: str = "") -> AsyncIterator[dict[str, Any]]:
         yield {"type": "step", "tool": "search", "label": "Searched knowledge", "detail": "hybrid retrieval"}
         async with self.db.acquire(tenant_id) as conn:
             result = await self.searcher.search(conn, query, principals, k=8, sources=sources)
@@ -249,7 +252,8 @@ class AnswerService:
             route.path = "agent"
             route.model = self.settings.model_deep
             async for e in self._research(tenant_id, principals, query, route, cost, sources, None,
-                                          prefetched=result.hits, compute_note=compute_note):
+                                          prefetched=result.hits, compute_note=compute_note,
+                                          extra_instructions=extra_instructions):
                 yield e
             return
 
@@ -258,7 +262,8 @@ class AnswerService:
                 # No documents, but the code interpreter produced a result — answer from it.
                 ledger = Ledger.from_hits([])
                 async for e in self._synthesize(query, ledger, route, cost, ANSWER_SYSTEM,
-                                                max_tokens=1000, effort=route.effort, compute_note=compute_note):
+                                                max_tokens=1000, effort=route.effort, compute_note=compute_note,
+                                                extra_instructions=extra_instructions):
                     yield e
                 yield {"type": "_meta", "confidence": 0.6, "answered": True}
                 return
@@ -270,7 +275,8 @@ class AnswerService:
 
         ledger = Ledger.from_hits(result.hits)
         async for e in self._synthesize(query, ledger, route, cost, ANSWER_SYSTEM, max_tokens=1200,
-                                        effort=route.effort, compute_note=compute_note):
+                                        effort=route.effort, compute_note=compute_note,
+                                        extra_instructions=extra_instructions):
             yield e
         yield {"type": "_meta", "confidence": result.confidence, "answered": True}
 
@@ -278,7 +284,7 @@ class AnswerService:
 
     async def _research(
         self, tenant_id, principals, query, route, cost, sources, user_id, prefetched: list[Hit] | None = None,
-        compute_note: str = "",
+        compute_note: str = "", extra_instructions: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         subquestions = await self._plan(query, cost)
         yield {"type": "step", "tool": "plan", "label": "Planned research",
@@ -313,7 +319,8 @@ class AnswerService:
             if compute_note:
                 ledger = Ledger.from_hits([])
                 async for e in self._synthesize(query, ledger, route, cost, RESEARCH_SYSTEM,
-                                                max_tokens=1400, effort="high", compute_note=compute_note):
+                                                max_tokens=1400, effort="high", compute_note=compute_note,
+                                                extra_instructions=extra_instructions):
                     yield e
                 yield {"type": "_meta", "confidence": 0.6, "answered": True}
                 return
@@ -325,7 +332,8 @@ class AnswerService:
 
         ledger = Ledger.from_hits(merged)
         async for e in self._synthesize(query, ledger, route, cost, RESEARCH_SYSTEM, max_tokens=2600,
-                                        effort="high", include_parent=True, compute_note=compute_note):
+                                        effort="high", include_parent=True, compute_note=compute_note,
+                                        extra_instructions=extra_instructions):
             yield e
 
         if route.artifact:
@@ -343,8 +351,13 @@ class AnswerService:
 
     async def _synthesize(
         self, query, ledger: Ledger, route: Route, cost: CostLedger, system: str,
-        *, max_tokens: int, effort: str, include_parent: bool = False, compute_note: str = ""
+        *, max_tokens: int, effort: str, include_parent: bool = False, compute_note: str = "",
+        extra_instructions: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
+        if extra_instructions.strip():
+            # Per-agent instructions are layered on top of the base system prompt,
+            # but never override the grounding/citation rules above.
+            system = f"{system}\n\nAdditional instructions for this agent:\n{extra_instructions.strip()}"
         evidence = ledger.prompt_block(include_parent)
         compute_block = (
             f"\n\nComputed results from the code interpreter (ran over the session's files; "
