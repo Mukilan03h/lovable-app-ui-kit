@@ -70,11 +70,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from .api.routers import (
         admin, agents, artifacts, assistant, auth, connectors, corrections, inbox, insights,
-        mcp, sandbox, scim, search, settings as settings_router, shares, skills,
+        live, mcp, sandbox, scim, search, settings as settings_router, shares, skills,
     )
 
     for module in (auth, assistant, search, connectors, artifacts, agents, settings_router,
-                   insights, admin, scim, mcp, sandbox, shares, skills, corrections, inbox):
+                   insights, admin, scim, mcp, sandbox, shares, skills, corrections, inbox, live):
         app.include_router(module.router)
 
     @app.get("/api/health")

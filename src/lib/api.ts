@@ -237,6 +237,13 @@ export const api = {
       args ? { decision, args } : { decision },
     ),
 
+  // live business-data sources
+  liveSources: () => apiGet<{ sources: LiveSource[] }>("/api/live"),
+  createLiveSource: (body: { name: string; kind: string; description?: string; config: Record<string, unknown> }) =>
+    apiSend<{ id: string }>("/api/live", "POST", body),
+  deleteLiveSource: (id: string) => apiSend(`/api/live/${id}`, "DELETE"),
+  queryLiveSource: (id: string) => apiSend<LiveQueryResult>(`/api/live/${id}/query`, "POST"),
+
   // durable agent runs (jobs)
   enqueueJob: (agentId: string, body: { task?: string; budget?: number; idempotencyKey?: string } = {}) =>
     apiSend<{ jobId: string; status: string }>(`/api/agents/${agentId}/jobs`, "POST", body),
@@ -366,6 +373,8 @@ export type AgentTestResult = {
   followedInstructions: { producedAnswer: boolean; stayedWithinSourceScope: boolean; scope: unknown };
   estimatedCost: number; note: string;
 };
+export type LiveSource = { id: string; name: string; kind: string; description: string; enabled: boolean };
+export type LiveQueryResult = { name: string; columns: string[]; rows: unknown[][]; checkedAt: number; rowCount: number };
 export type MemoryRow = {
   id: string; text: string; source: string; scope: string; agentId: string | null;
   useInRuns: boolean; createdAt: number;

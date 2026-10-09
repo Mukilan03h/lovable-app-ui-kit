@@ -596,3 +596,45 @@ async def test_scoped_memory_crud_and_run_injection(client, services):
     await client.delete(f"/api/settings/memory/{fy['id']}", headers=auth(admin))
     gathered2 = await _gather_memory(services, services._test_tenant, uid, aid)
     assert "fiscal year" not in gathered2
+
+
+async def test_live_source_query_is_read_only(client, services):
+    """A SQL live source returns current rows; writes and non-SELECT are rejected."""
+    admin = await token_for(client, services, "admin")
+    # A read-only SELECT against our own data proves the live-query path.
+    created = await client.post("/api/live", headers=auth(admin), json={
+        "name": "Doc count", "kind": "sql",
+        "config": {"query": "SELECT source, count(*) AS n FROM documents GROUP BY source"},
+    })
+    sid = created.json()["id"]
+    res = await client.post(f"/api/live/{sid}/query", headers=auth(admin), json={})
+    assert res.status_code == 200
+    data = res.json()
+    assert "source" in data["columns"] and data["checkedAt"] and data["rowCount"] >= 0
+
+    # A write is rejected at validation time.
+    bad = await client.post("/api/live", headers=auth(admin), json={
+        "name": "evil", "kind": "sql", "config": {"query": "DELETE FROM documents"},
+    })
+    q = await client.post(f"/api/live/{bad.json()['id']}/query", headers=auth(admin), json={})
+    assert q.status_code == 400
+
+    # A non-reviewer cannot register a live source.
+    member = await token_for(client, services, "member")
+    denied = await client.post("/api/live", headers=auth(member), json={"name": "x", "kind": "sql", "config": {"query": "SELECT 1"}})
+    assert denied.status_code == 403
+
+
+async def test_live_data_folds_into_answer(client, services):
+    """Asking with a live source emits a live event and the current records reach the answer."""
+    admin = await token_for(client, services, "admin")
+    sid = (await client.post("/api/live", headers=auth(admin), json={
+        "name": "Open projects", "kind": "sql",
+        "config": {"query": "SELECT title FROM documents LIMIT 3"},
+    })).json()["id"]
+    events = await read_sse(client, "/api/assistant/ask", auth(admin),
+                            {"query": "summarise current project records", "mode": "auto", "liveSourceId": sid})
+    assert any(e.get("type") == "live" for e in events)
+    assert any(e.get("type") == "step" and e.get("label") == "Checked live data" for e in events)
+    answer = next((e for e in events if e.get("type") == "answer"), {})
+    assert answer.get("text")

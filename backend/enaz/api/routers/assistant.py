@@ -22,6 +22,7 @@ class AskRequest(BaseModel):
     sources: list[str] | None = None
     artifact: str | None = None     # slides | doc | sheet
     conversationId: str | None = None
+    liveSourceId: str | None = None
 
 
 class CompareRequest(BaseModel):
@@ -68,10 +69,27 @@ async def ask(
         prefs = json.loads(raw) if isinstance(raw, str) else raw
         if isinstance(prefs, dict) and "layaDecision" in prefs:
             system1 = bool(prefs["layaDecision"])
+    # Live business data: fetch current records now and fold them into the answer.
+    live_note = ""
+    if body.liveSourceId:
+        from ...live import LiveQueryError, as_evidence_block, run_live_query
+
+        async with svc.db.acquire(principal.tenant_id) as conn:
+            lrow = await conn.fetchrow(
+                "SELECT name, kind, config, enabled FROM live_sources WHERE id=$1", body.liveSourceId
+            )
+        if lrow and lrow["enabled"]:
+            try:
+                cfg = lrow["config"] if isinstance(lrow["config"], dict) else json.loads(lrow["config"])
+                result = await run_live_query(lrow["kind"], cfg, svc.settings.admin_database_url)
+                live_note = as_evidence_block(lrow["name"], result)
+            except (LiveQueryError, Exception):  # noqa: BLE001 - never fail the answer on a live miss
+                live_note = ""
     events = svc.answers.answer(
         principal.tenant_id, principals, ak, body.query,
         mode=body.mode, sources=body.sources, user_id=principal.user.id,
         wants_artifact=body.artifact, system1=system1, conversation_id=body.conversationId,
+        live_note=live_note,
     )
     return StreamingResponse(
         _sse(events),

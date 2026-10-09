@@ -80,6 +80,7 @@ class AnswerService:
         system1: bool | None = None,
         conversation_id: str | None = None,
         extra_instructions: str = "",
+        live_note: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         started = time.perf_counter()
         ledger_cost = CostLedger()
@@ -155,6 +156,14 @@ class AnswerService:
                     compute_note = outcome.summary
         # Computed answers depend on session files, so never serve them from cache.
         allow_cache = allow_cache and not compute_ran
+
+        # Live business data: current records fetched at answer time, folded in as
+        # authoritative evidence and reported as checked-just-now.
+        if live_note:
+            yield {"type": "step", "tool": "graph", "label": "Checked live data", "detail": "current records"}
+            yield {"type": "live", "checkedAt": time.time()}
+            compute_note = (compute_note + "\n\n" if compute_note else "") + live_note
+            allow_cache = False  # live data must not be cached
 
         if allow_cache and route.intent in ("lookup", "question") and not route.artifact:
             cached = await self.cache.get(tenant_id, acl_key, qvec)
@@ -384,8 +393,10 @@ class AnswerService:
             system = f"{system}\n\nAdditional instructions for this agent:\n{extra_instructions.strip()}"
         evidence = ledger.prompt_block(include_parent)
         compute_block = (
-            f"\n\nComputed results from the code interpreter (ran over the session's files; "
-            f"treat these numbers as ground truth and reference them directly):\n{compute_note}\n"
+            f"\n\nAdditional authoritative data (from the code interpreter and/or live business "
+            f"systems; treat it as ground truth and reference it directly. State figures from it as "
+            f"recorded facts, and clearly distinguish them from explanations you infer from documents):"
+            f"\n{compute_note}\n"
             if compute_note else ""
         )
         prompt = (
