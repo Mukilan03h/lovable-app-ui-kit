@@ -210,6 +210,85 @@ async def test_agent(agent_id: str, body: TestRequest, principal: Principal = De
     }
 
 
+class JobRequest(BaseModel):
+    task: str | None = None
+    budget: float = 0.0
+    idempotencyKey: str | None = None
+
+
+@router.post("/agents/{agent_id}/jobs")
+async def enqueue_job(agent_id: str, body: JobRequest, principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    """Start a DURABLE run: it survives the chat closing and worker restarts. The
+    background worker picks it up; poll /api/jobs/{id} for status and events."""
+    from ...run_engine import enqueue
+
+    async with svc.db.acquire(principal.tenant_id) as conn:
+        agent = await conn.fetchrow("SELECT enabled FROM agents WHERE id=$1", agent_id)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    if not agent["enabled"]:
+        raise HTTPException(409, "This agent is disabled")
+    job_id = await enqueue(svc, principal.tenant_id, agent_id, principal.user.id,
+                           body.task or "", idempotency_key=body.idempotencyKey, budget=body.budget)
+    await audit(svc, principal, "job.enqueue", agent_id)
+    return {"jobId": job_id, "status": "queued"}
+
+
+@router.get("/jobs")
+async def list_jobs(principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    async with svc.db.acquire(principal.tenant_id) as conn:
+        rows = await conn.fetch(
+            """SELECT j.id, j.status, j.task, j.cost, j.error, a.name AS agent,
+                      extract(epoch FROM j.created_at) AS created_at,
+                      extract(epoch FROM j.finished_at) AS finished_at
+               FROM agent_jobs j LEFT JOIN agents a ON a.id = j.agent_id
+               WHERE j.user_id = $1 ORDER BY j.created_at DESC LIMIT 50""",
+            principal.user.id,
+        )
+    return {"jobs": [
+        {"id": str(r["id"]), "status": r["status"], "task": r["task"], "agent": r["agent"],
+         "cost": r["cost"], "error": r["error"], "createdAt": r["created_at"], "finishedAt": r["finished_at"]}
+        for r in rows
+    ]}
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str, after: int = 0, principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    async with svc.db.acquire(principal.tenant_id) as conn:
+        job = await conn.fetchrow(
+            """SELECT j.id, j.status, j.task, j.cost, j.error, j.result, a.name AS agent,
+                      extract(epoch FROM j.created_at) AS created_at, extract(epoch FROM j.finished_at) AS finished_at
+               FROM agent_jobs j LEFT JOIN agents a ON a.id = j.agent_id WHERE j.id = $1""",
+            job_id,
+        )
+        if not job:
+            raise HTTPException(404, "Job not found")
+        events = await conn.fetch(
+            "SELECT seq, event FROM agent_job_events WHERE job_id=$1 AND seq > $2 ORDER BY seq LIMIT 500",
+            job_id, after,
+        )
+        receipts = await conn.fetch(
+            "SELECT action_id, step, tool, status, extract(epoch FROM created_at) AS created_at FROM agent_receipts WHERE job_id=$1 ORDER BY created_at",
+            job_id,
+        )
+    return {
+        "id": str(job["id"]), "status": job["status"], "task": job["task"], "agent": job["agent"],
+        "cost": job["cost"], "error": job["error"], "result": _load(job["result"]),
+        "createdAt": job["created_at"], "finishedAt": job["finished_at"],
+        "events": [{"seq": e["seq"], **_load(e["event"])} for e in events],
+        "receipts": [{"actionId": r["action_id"], "step": r["step"], "tool": r["tool"],
+                      "status": r["status"], "createdAt": r["created_at"]} for r in receipts],
+    }
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str, principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    from ...run_engine import request_cancel
+
+    status = await request_cancel(svc, principal.tenant_id, job_id)
+    return {"ok": True, "status": status}
+
+
 @router.get("/approvals")
 async def approvals(principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
     async with svc.db.acquire(principal.tenant_id) as conn:

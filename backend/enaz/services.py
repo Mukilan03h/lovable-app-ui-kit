@@ -48,6 +48,7 @@ class Services:
         )
         self.artifacts = ArtifactService(self.db, self.llm, settings)
         self._scheduler_task: asyncio.Task | None = None
+        self._run_worker_task: asyncio.Task | None = None
 
     async def startup(self) -> list[str]:
         applied = await self.db.migrate()
@@ -59,6 +60,26 @@ class Services:
         if not self.settings.scheduler_enabled or self._scheduler_task is not None:
             return
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
+
+    def start_run_worker(self) -> None:
+        """Start the durable agent-run worker (idempotent)."""
+        if not self.settings.run_worker_enabled or self._run_worker_task is not None:
+            return
+        self._run_worker_task = asyncio.create_task(self._run_worker_loop())
+
+    async def _run_worker_loop(self) -> None:
+        from .run_engine import run_worker_once
+
+        log = logging.getLogger("enaz.runworker")
+        while True:
+            try:
+                did = await run_worker_once(self)
+                await asyncio.sleep(0.2 if did else 2.0)  # drain fast, idle slow
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001 - keep the worker alive across errors
+                log.warning("run worker error: %s", exc)
+                await asyncio.sleep(2.0)
 
     async def _scheduler_loop(self) -> None:
         from .ingest.sync import due_connectors, mark_scheduled, run_sync
@@ -82,11 +103,13 @@ class Services:
                 log.warning("scheduler tick error: %s", exc)
 
     async def shutdown(self) -> None:
-        if self._scheduler_task is not None:
-            self._scheduler_task.cancel()
-            try:
-                await self._scheduler_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._scheduler_task = None
+        for attr in ("_scheduler_task", "_run_worker_task"):
+            task = getattr(self, attr, None)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                setattr(self, attr, None)
         await self.db.close()

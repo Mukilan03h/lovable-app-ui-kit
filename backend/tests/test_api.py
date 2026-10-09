@@ -428,3 +428,84 @@ async def test_agent_test_mode_is_dry_run(client, services):
     # Dry run must not create an approval.
     after = await client.get("/api/approvals", headers=auth(admin))
     assert len(after.json()["approvals"]) == n_before
+
+
+async def _make_agent(client, token, **extra):
+    r = await client.post("/api/agents", headers=auth(token),
+                          json={"name": extra.pop("name", "Worker agent"), "description": "research the PTO policy",
+                                "output": "answer", **extra})
+    return r.json()["id"]
+
+
+async def test_durable_run_engine_executes_and_checkpoints(client, services):
+    """A queued job is claimed and run to success; a reclaimed (expired-lease) job
+    resumes from its checkpoint instead of re-answering."""
+    from enaz.run_engine import claim_next, enqueue, execute_job, run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    tid = services._test_tenant
+    aid = await _make_agent(client, admin, name="Durable", tools=["Search"])
+
+    # Enqueue via the API, then drive one worker tick.
+    r = await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "what is the PTO policy"})
+    job_id = r.json()["jobId"]
+    assert await run_worker_once(services) is True
+    got = await client.get(f"/api/jobs/{job_id}", headers=auth(admin))
+    data = got.json()
+    assert data["status"] == "succeeded"
+    kinds = {e.get("type") for e in data["events"]}
+    assert {"run.started", "run.finished"} <= kinds
+    assert data["result"].get("answer")
+
+    # Idempotency: same key returns the same job.
+    uid = (await client.get("/api/auth/me", headers=auth(admin))).json()["user"]["id"]
+    k = "dedupe-123"
+    j1 = await enqueue(services, tid, aid, uid, "x", idempotency_key=k)
+    j2 = await enqueue(services, tid, aid, uid, "x", idempotency_key=k)
+    assert j1 == j2
+
+    # Checkpoint/resume: a job with an 'answered' checkpoint finishes WITHOUT
+    # re-answering (execute_job is the reclaim path; claim ordering is covered above).
+    async with services.db.acquire(tid) as conn:
+        rid = await conn.fetchval(
+            """INSERT INTO agent_jobs (tenant_id, agent_id, user_id, task, status, checkpoint, lease_until)
+               VALUES ($1,$2,NULL,'resume me','running','{"answered": true}'::jsonb, now() - interval '5 minutes')
+               RETURNING id""",
+            tid, aid,
+        )
+        job_row = dict(await conn.fetchrow("SELECT * FROM agent_jobs WHERE id=$1", rid))
+    outcome = await execute_job(services, job_row)
+    assert outcome == "succeeded"
+    async with services.db.acquire(tid) as conn:
+        evs = await conn.fetch("SELECT event FROM agent_job_events WHERE job_id=$1 ORDER BY seq", rid)
+    labels = [(json.loads(e["event"]) if isinstance(e["event"], str) else e["event"]).get("label") for e in evs]
+    assert "Resumed" in labels  # did not re-run the answer step
+
+
+async def test_durable_run_cancel_and_sideeffect(client, services):
+    from enaz.run_engine import request_cancel, run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    tid = services._test_tenant
+
+    # Cancel before it runs → cancelled, and the worker never executes it.
+    aid = await _make_agent(client, admin, name="Cancellable", tools=["Search"])
+    jid = (await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "q"})).json()["jobId"]
+    status = await request_cancel(services, tid, jid)
+    assert status == "cancelled"
+    # The only runnable job may be another test's; ensure this one stays cancelled.
+    got = await client.get(f"/api/jobs/{jid}", headers=auth(admin))
+    assert got.json()["status"] == "cancelled"
+
+    # A side-effect agent parks at approval with a 'proposed' receipt.
+    said = await _make_agent(client, admin, name="Jira durable", tools=["Search", "Jira"])
+    sjid = (await client.post(f"/api/agents/{said}/jobs", headers=auth(admin), json={"task": "file it"})).json()["jobId"]
+    # Drain the queue until our side-effect job is processed.
+    for _ in range(10):
+        if not await run_worker_once(services):
+            break
+    got = await client.get(f"/api/jobs/{sjid}", headers=auth(admin))
+    data = got.json()
+    assert data["status"] == "awaiting_approval"
+    assert any(e.get("type") == "interrupt" for e in data["events"])
+    assert any(rc["status"] == "proposed" and rc["tool"] == "jira" for rc in data["receipts"])

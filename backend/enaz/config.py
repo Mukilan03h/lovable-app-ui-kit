@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_interval_seconds: int = 60
 
+    # Durable agent-run worker: claims and executes queued agent jobs.
+    run_worker_enabled: bool = True
+
     # Web search provider for the "Web" toggle: "none" | "searxng".
     web_search_provider: str = "none"
     searxng_url: str | None = None
