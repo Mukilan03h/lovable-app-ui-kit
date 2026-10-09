@@ -103,6 +103,8 @@ class IngestionService:
             removed = 0
             for r in rows:
                 if str(r["id"]) not in keep_doc_ids:
+                    # Drop the vectors first (no-op for pgvector, which cascades), then the doc.
+                    await self.index.vectorstore.delete_doc(conn, tenant_id, str(r["id"]))
                     await conn.execute("DELETE FROM documents WHERE id = $1", r["id"])
                     removed += 1
         return removed

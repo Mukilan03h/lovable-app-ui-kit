@@ -101,6 +101,31 @@ async def test_compute_runs_offline_over_a_csv(tmp_path):
     assert any(f.endswith(".png") for f in outcome.new_files)
 
 
+def test_vectorstore_selection_and_qdrant_payload():
+    """Default backend is pgvector; the Qdrant payload/filter carry tenant + ACL."""
+    from enaz.config import Settings
+    from enaz.retrieval.vectorstore import (
+        PgVectorStore, QdrantVectorStore, build_vector_store, qdrant_filter, qdrant_point,
+    )
+
+    assert isinstance(build_vector_store(Settings()), PgVectorStore)
+    assert isinstance(build_vector_store(Settings(vector_backend="qdrant")), QdrantVectorStore)
+
+    pt = qdrant_point("c1", "d1", [0.1, 0.2, 0.3], ["Public", "group:eng"], tenant="t1")
+    assert pt["id"] == "c1"
+    assert pt["payload"] == {
+        "chunk_id": "c1", "doc_id": "d1", "tenant": "t1", "acl": ["public", "group:eng"],
+    }
+    assert pt["vector"] == [0.1, 0.2, 0.3]
+
+    # The ACL filter is an OR over the caller's principals (lower-cased).
+    flt = qdrant_filter(["Public", "Group:Eng"])
+    assert flt["should"] == [
+        {"key": "acl", "match": {"value": "public"}},
+        {"key": "acl", "match": {"value": "group:eng"}},
+    ]
+
+
 def test_openapi_import_parses_operations():
     """The action builder flattens an OpenAPI 3 doc into callable actions."""
     from enaz.api.routers.skills import _parse_openapi, slugify

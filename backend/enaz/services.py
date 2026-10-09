@@ -29,7 +29,9 @@ class Services:
         self.embedder = build_embedder(
             settings.embedding_provider, settings.embedding_dim, settings.voyage_api_key, settings.voyage_model
         )
-        self.index = DocumentIndex()
+        from .retrieval.vectorstore import build_vector_store
+
+        self.index = DocumentIndex(build_vector_store(settings))
         reranker = (
             CohereReranker(settings.cohere_api_key)
             if settings.rerank_provider == "cohere" and settings.cohere_api_key

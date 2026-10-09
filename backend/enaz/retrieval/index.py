@@ -20,6 +20,13 @@ from ..db import new_uuid
 
 
 class DocumentIndex:
+    def __init__(self, vectorstore: Any | None = None):
+        if vectorstore is None:
+            from .vectorstore import PgVectorStore
+
+            vectorstore = PgVectorStore()
+        self.vectorstore = vectorstore
+
     async def upsert_document(
         self,
         conn: asyncpg.Connection,
@@ -52,17 +59,23 @@ class DocumentIndex:
                 "INSERT INTO doc_acl (tenant_id, doc_id, principal) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", acl_rows
             )
         if chunks:
+            chunk_ids = [new_uuid() for _ in chunks]
             await conn.executemany(
-                """INSERT INTO chunks (id, tenant_id, doc_id, ord, section, text, context, parent_text, tokens, embedding)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                """INSERT INTO chunks (id, tenant_id, doc_id, ord, section, text, context, parent_text, tokens)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
                 [
                     (
-                        new_uuid(), tenant_id, doc_id, c["ord"], c.get("section", ""), c["text"],
+                        cid, tenant_id, doc_id, c["ord"], c.get("section", ""), c["text"],
                         c.get("context", ""), c.get("parent_text", ""), c.get("tokens", 0),
-                        np.asarray(vec, dtype=np.float32),
                     )
-                    for c, vec in zip(chunks, vectors)
+                    for cid, c in zip(chunk_ids, chunks)
                 ],
+            )
+            # The vector store attaches embeddings (pgvector column, or a dedicated
+            # ANN index such as Qdrant). Keeping it behind the interface is what lets
+            # the vector backend be swapped without touching ingestion.
+            await self.vectorstore.upsert(
+                conn, tenant_id, doc_id, chunk_ids, list(vectors), [p.lower() for p in dict.fromkeys(principals)]
             )
         return doc_id
 
@@ -101,20 +114,9 @@ class DocumentIndex:
     async def vector_search(
         self, conn: asyncpg.Connection, qvec: np.ndarray, principals: list[str], limit: int = 60
     ) -> list[tuple[str, float]]:
-        if not principals:
-            return []
-        # Keep recall high when the ACL filter is selective (restricted users).
-        await conn.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
-        await conn.execute("SET LOCAL hnsw.max_scan_tuples = 20000")
-        rows = await conn.fetch(
-            """SELECT c.id, 1 - (c.embedding <=> $1) AS cosine
-               FROM chunks c
-               WHERE c.embedding IS NOT NULL
-                 AND EXISTS (SELECT 1 FROM doc_acl a WHERE a.doc_id = c.doc_id AND a.principal = ANY($2::text[]))
-               ORDER BY c.embedding <=> $1 LIMIT $3""",
-            np.asarray(qvec, dtype=np.float32), [p.lower() for p in principals], limit,
-        )
-        return [(str(r["id"]), float(r["cosine"])) for r in rows]
+        # The default pgvector store scopes by RLS on `conn` and ignores tenant_id;
+        # a dedicated backend (Qdrant) resolves the tenant from the connection GUC.
+        return await self.vectorstore.search(conn, None, qvec, principals, limit)
 
     async def get_chunks(self, conn: asyncpg.Connection, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
         if not chunk_ids:

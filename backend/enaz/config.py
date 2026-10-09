@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     rerank_provider: str = "local"  # "local" | "cohere"
     cohere_api_key: str | None = None
 
+    # Vector backend: "pgvector" (default, vectors in Postgres) or "qdrant"
+    # (dedicated ANN cluster for very large / high-QPS deployments).
+    vector_backend: str = "pgvector"
+    qdrant_url: str = "http://127.0.0.1:6333"
+    qdrant_api_key: str | None = None
+    qdrant_collection: str = "enaz_chunks"
+
     max_upload_mb: int = 50
     rate_limit_per_minute: int = 120
 
