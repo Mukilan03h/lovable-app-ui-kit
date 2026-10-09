@@ -101,6 +101,34 @@ async def test_compute_runs_offline_over_a_csv(tmp_path):
     assert any(f.endswith(".png") for f in outcome.new_files)
 
 
+def test_openapi_import_parses_operations():
+    """The action builder flattens an OpenAPI 3 doc into callable actions."""
+    from enaz.api.routers.skills import _parse_openapi, slugify
+
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "Ticket API"},
+        "servers": [{"url": "https://api.example.com/v1"}],
+        "paths": {
+            "/tickets": {
+                "get": {"operationId": "listTickets", "summary": "List"},
+                "post": {"operationId": "createTicket", "requestBody": {}},
+            },
+            "/tickets/{id}": {
+                "get": {"parameters": [{"name": "id", "in": "path", "required": True}]},
+            },
+        },
+    }
+    title, actions = _parse_openapi(spec, None)
+    assert slugify(title) == "ticket-api"
+    by_name = {a["name"]: a for a in actions}
+    assert by_name["listTickets"]["method"] == "GET"
+    assert {"name": "body", "in": "body", "required": True} in by_name["createTicket"]["parameters"]
+    # Path with no operationId gets a synthesised name and keeps its path param.
+    getter = next(a for a in actions if a["path"] == "/tickets/{id}" and a["method"] == "GET")
+    assert any(p["name"] == "id" and p["in"] == "path" for p in getter["parameters"])
+
+
 def test_verifier_flags_unsupported_claims():
     emb = HashingEmbedder(256)
     ledger = Ledger.from_hits([

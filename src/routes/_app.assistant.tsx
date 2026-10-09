@@ -20,6 +20,7 @@ import {
   Paperclip,
   RotateCcw,
   Search,
+  Share2,
   ShieldCheck,
   Sparkles,
   Terminal,
@@ -137,6 +138,12 @@ type Turn = {
   scope: SourceApp[];
 };
 
+type ShareTurn = {
+  question: string;
+  answer: string;
+  sources: { n: number; title: string; source: string }[];
+};
+
 const detectArtifact = (q: string): ArtifactKind | undefined => {
   const s = q.toLowerCase();
   if (/(deck|slide|ppt|presentation)/.test(s)) return "slides";
@@ -161,8 +168,29 @@ function AssistantPage() {
     typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `c-${Date.now()}`,
   );
   const [sessionFiles, setSessionFiles] = useState<string[]>([]);
+  const [results, setResults] = useState<Record<number, ShareTurn>>({});
+  const [sharing, setSharing] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+
+  const shareChat = async () => {
+    const turns = Object.values(results);
+    if (!turns.length) {
+      toast("Ask something first, then share the chat");
+      return;
+    }
+    setSharing(true);
+    try {
+      const { url } = await api.shareChat(turns[0]?.question.slice(0, 60) ?? "Shared chat", turns);
+      const full = `${window.location.origin}${url}`;
+      await navigator.clipboard?.writeText(full).catch(() => {});
+      toast("Share link copied", { description: full });
+    } catch {
+      toast.error("Couldn't create a share link");
+    } finally {
+      setSharing(false);
+    }
+  };
 
   const onUpload = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -288,6 +316,16 @@ function AssistantPage() {
             </DropdownMenuContent>
           </DropdownMenu>
           <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={shareChat}
+              disabled={sharing}
+              title="Share this chat as a read-only link"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-border px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+            >
+              <Share2 className="size-3.5" />
+              <span className="hidden sm:inline">{sharing ? "Sharing…" : "Share"}</span>
+            </button>
             <ContextMeter used={contextUsed} />
             <DropdownMenu>
               <DropdownMenuTrigger className="flex items-center gap-1.5 rounded-xl border border-border px-2 py-1 text-xs font-medium hover:bg-muted">
@@ -349,6 +387,7 @@ function AssistantPage() {
                   turn={t}
                   conversationId={conversationId}
                   onGenerate={(k) => send(t.question, k)}
+                  onComplete={(r) => setResults((prev) => ({ ...prev, [t.id]: r }))}
                 />
               ))}
               <div ref={endRef} />
@@ -695,15 +734,27 @@ function AnswerTurn({
   turn,
   onGenerate,
   conversationId,
+  onComplete,
 }: {
   turn: Turn;
   onGenerate: (k: ArtifactKind) => void;
   conversationId: string;
+  onComplete?: (r: ShareTurn) => void;
 }) {
   const state = useTurn(turn, conversationId);
   const [focused, setFocused] = useState<number | null>(null);
   const done = state.done;
   const artifactKind = state.artifactKind ?? turn.artifact;
+
+  useEffect(() => {
+    if (!done || !onComplete) return;
+    onComplete({
+      question: turn.question,
+      answer: state.paragraphs.map((p) => p.text).join("\n\n"),
+      sources: state.sources.map((s) => ({ n: s.n, title: s.title, source: s.source })),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [done]);
 
   return (
     <div className="space-y-4">

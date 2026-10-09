@@ -2,13 +2,19 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  Blocks,
   Bot,
   CalendarClock,
   Check,
+  Globe,
+  Lock,
   MessageSquare,
   Play,
   Plus,
   ShieldAlert,
+  Sparkles,
+  Trash2,
+  Upload,
   Wrench,
   X,
   Zap,
@@ -17,8 +23,14 @@ import { toast } from "sonner";
 import { Guard } from "@/components/app/Guard";
 import { artifactMeta } from "@/components/app/artifact-meta";
 import { Bar, PageHeader, Pill } from "@/components/app/ui-bits";
-import { PageTransition, StaggerGroup } from "@/lib/motion";
-import { api, type AgentRow, type ApprovalRow } from "@/lib/api";
+import { fadeUp, PageTransition, StaggerGroup } from "@/lib/motion";
+import {
+  api,
+  type ActionRow,
+  type AgentRow,
+  type ApprovalRow,
+  type SkillRow,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/_app/agents")({
   head: () => ({
@@ -67,6 +79,29 @@ function argSummary(args: Record<string, unknown>): string {
     .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(" · ");
 }
+
+/** Color pill classes per HTTP method — GET green, POST blue, DELETE red, else gray. */
+const methodTone: Record<string, string> = {
+  GET: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+  POST: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
+  DELETE: "bg-red-500/15 text-red-600 dark:text-red-400",
+};
+const methodClass = (m: string) =>
+  methodTone[m.toUpperCase()] ?? "bg-muted text-muted-foreground";
+
+/** Group actions by their collection, preserving first-seen order. */
+function groupByCollection(actions: ActionRow[]): [string, ActionRow[]][] {
+  const groups = new Map<string, ActionRow[]>();
+  for (const a of actions) {
+    const bucket = groups.get(a.collection);
+    if (bucket) bucket.push(a);
+    else groups.set(a.collection, [a]);
+  }
+  return [...groups.entries()];
+}
+
+const inputClass =
+  "w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm outline-none transition focus:border-brand";
 
 function AgentsPage() {
   const [agents, setAgents] = useState<AgentRow[]>([]);
@@ -250,6 +285,10 @@ function AgentsPage() {
         </StaggerGroup>
       )}
 
+      <SkillsSection />
+
+      <ActionsSection />
+
       <AnimatePresence>
         {selected && (
           <motion.div
@@ -332,5 +371,394 @@ function AgentsPage() {
         )}
       </AnimatePresence>
     </PageTransition>
+  );
+}
+
+function SkillsSection() {
+  const [skills, setSkills] = useState<SkillRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [tools, setTools] = useState("");
+
+  async function load() {
+    setError(null);
+    try {
+      const res = await api.skills();
+      setSkills(res.skills);
+    } catch {
+      setError("Couldn't load skills. Check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function create() {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      toast.error("Give the skill a name first");
+      return;
+    }
+    const toolList = tools
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    const body: {
+      name: string;
+      description?: string;
+      instructions?: string;
+      tools?: string[];
+    } = { name: trimmedName };
+    const trimmedDesc = description.trim();
+    if (trimmedDesc) body.description = trimmedDesc;
+    const trimmedInstr = instructions.trim();
+    if (trimmedInstr) body.instructions = trimmedInstr;
+    if (toolList.length) body.tools = toolList;
+
+    setSaving(true);
+    try {
+      await api.createSkill(body);
+      toast("Skill created", { description: `"${trimmedName}" is ready to attach to agents.` });
+      setName("");
+      setDescription("");
+      setInstructions("");
+      setTools("");
+      await load();
+    } catch {
+      toast.error("Couldn't create the skill");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(id: string, label: string) {
+    try {
+      await api.deleteSkill(id);
+      toast(`Deleted "${label}"`);
+      await load();
+    } catch {
+      toast.error("Couldn't delete the skill");
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center gap-2">
+        <span className="grid size-9 place-items-center rounded-2xl bg-brand/12 text-brand">
+          <Sparkles className="size-5" />
+        </span>
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Skills</h2>
+          <p className="text-sm text-muted-foreground">
+            Reusable instruction packs with their own tools, shared across your agents.
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-border bg-card p-5 shadow-[var(--shadow-soft)]">
+        <p className="mb-3 flex items-center gap-2 text-sm font-semibold">
+          <Plus className="size-4 text-brand" /> New skill
+        </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Name"
+            className={inputClass}
+          />
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Description"
+            className={inputClass}
+          />
+        </div>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder="Instructions — what this skill should do and how"
+          rows={3}
+          className={`${inputClass} mt-3 resize-y`}
+        />
+        <input
+          value={tools}
+          onChange={(e) => setTools(e.target.value)}
+          placeholder="Tools (comma-separated) — e.g. search, web, code"
+          className={`${inputClass} mt-3`}
+        />
+        <div className="mt-3 flex justify-end">
+          <button
+            onClick={create}
+            disabled={saving}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+          >
+            <Plus className="size-4" /> {saving ? "Creating…" : "Create skill"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-40 animate-pulse rounded-3xl border border-border bg-card shadow-[var(--shadow-soft)]"
+            />
+          ))}
+        </div>
+      ) : error ? (
+        <div className="rounded-3xl border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+          {error}
+        </div>
+      ) : skills.length === 0 ? (
+        <div className="rounded-3xl border border-border bg-card p-10 text-center shadow-[var(--shadow-soft)]">
+          <span className="mx-auto grid size-12 place-items-center rounded-2xl bg-brand/12 text-brand">
+            <Sparkles className="size-6" />
+          </span>
+          <p className="mt-3 font-semibold">No skills yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Create a skill above to package instructions and tools your agents can reuse.
+          </p>
+        </div>
+      ) : (
+        <StaggerGroup className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {skills.map((s) => (
+            <motion.div
+              key={s.id}
+              variants={fadeUp}
+              className="flex flex-col rounded-3xl border border-border bg-card p-5 shadow-[var(--shadow-soft)]"
+            >
+              <div className="flex items-start gap-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-brand/12 text-brand">
+                  <Sparkles className="size-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold">{s.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">{s.slug}</p>
+                </div>
+                {s.shared ? (
+                  <Pill tone="info">
+                    <Globe className="size-3" /> Shared
+                  </Pill>
+                ) : (
+                  <Pill>
+                    <Lock className="size-3" /> Private
+                  </Pill>
+                )}
+                <button
+                  onClick={() => remove(s.id, s.name)}
+                  aria-label={`Delete ${s.name}`}
+                  className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
+              {s.description && (
+                <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">{s.description}</p>
+              )}
+              {s.tools.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {s.tools.map((t) => (
+                    <Pill key={t} tone="brand">
+                      <Wrench className="size-3" /> {t}
+                    </Pill>
+                  ))}
+                </div>
+              )}
+              {!s.enabled && (
+                <div className="mt-3">
+                  <Pill tone="warning">Disabled</Pill>
+                </div>
+              )}
+            </motion.div>
+          ))}
+        </StaggerGroup>
+      )}
+    </section>
+  );
+}
+
+function ActionsSection() {
+  const [actions, setActions] = useState<ActionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [spec, setSpec] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+
+  async function load() {
+    setError(null);
+    try {
+      const res = await api.actions();
+      setActions(res.actions);
+    } catch {
+      setError("Couldn't load actions. Check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function runImport() {
+    const trimmedSpec = spec.trim();
+    if (!trimmedSpec) {
+      toast.error("Paste an OpenAPI spec first");
+      return;
+    }
+    const trimmedBase = baseUrl.trim();
+    setImporting(true);
+    try {
+      const res = await api.importActions(trimmedSpec, trimmedBase || undefined);
+      toast("Actions imported", {
+        description: `${res.imported} action${res.imported === 1 ? "" : "s"} added to "${res.collection}".`,
+      });
+      setSpec("");
+      setBaseUrl("");
+      await load();
+    } catch {
+      toast.error("Couldn't import — check the spec is valid JSON or YAML");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function remove(id: string, label: string) {
+    try {
+      await api.deleteAction(id);
+      toast(`Deleted "${label}"`);
+      await load();
+    } catch {
+      toast.error("Couldn't delete the action");
+    }
+  }
+
+  const groups = groupByCollection(actions);
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-center gap-2">
+        <span className="grid size-9 place-items-center rounded-2xl bg-brand/12 text-brand">
+          <Blocks className="size-5" />
+        </span>
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Actions</h2>
+          <p className="text-sm text-muted-foreground">
+            Import an OpenAPI spec to give agents typed, approvable API calls.
+          </p>
+        </div>
+      </div>
+
+      <div className="rounded-3xl border border-border bg-card p-5 shadow-[var(--shadow-soft)]">
+        <p className="mb-3 flex items-center gap-2 text-sm font-semibold">
+          <Upload className="size-4 text-brand" /> Import from OpenAPI
+        </p>
+        <textarea
+          value={spec}
+          onChange={(e) => setSpec(e.target.value)}
+          placeholder="Paste an OpenAPI spec (JSON or YAML)…"
+          rows={5}
+          className={`${inputClass} resize-y font-mono text-xs`}
+        />
+        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="Base URL (optional) — e.g. https://api.example.com"
+            className={`${inputClass} sm:flex-1`}
+          />
+          <button
+            onClick={runImport}
+            disabled={importing}
+            className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-60"
+          >
+            <Upload className="size-4" /> {importing ? "Importing…" : "Import"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-16 animate-pulse rounded-2xl border border-border bg-card shadow-[var(--shadow-soft)]"
+            />
+          ))}
+        </div>
+      ) : error ? (
+        <div className="rounded-3xl border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
+          {error}
+        </div>
+      ) : actions.length === 0 ? (
+        <div className="rounded-3xl border border-border bg-card p-10 text-center shadow-[var(--shadow-soft)]">
+          <span className="mx-auto grid size-12 place-items-center rounded-2xl bg-brand/12 text-brand">
+            <Blocks className="size-6" />
+          </span>
+          <p className="mt-3 font-semibold">No actions yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Import an OpenAPI spec above to turn its endpoints into agent actions.
+          </p>
+        </div>
+      ) : (
+        <StaggerGroup className="space-y-5">
+          {groups.map(([collection, rows]) => (
+            <motion.div
+              key={collection}
+              variants={fadeUp}
+              className="rounded-3xl border border-border bg-card p-5 shadow-[var(--shadow-soft)]"
+            >
+              <p className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                <Blocks className="size-4 text-brand" /> {collection}
+                <Pill>{rows.length}</Pill>
+              </p>
+              <div className="space-y-2">
+                {rows.map((a) => (
+                  <div
+                    key={a.id}
+                    className="flex flex-wrap items-center gap-3 rounded-2xl border border-border px-4 py-3"
+                  >
+                    <span
+                      className={`inline-flex min-w-16 justify-center rounded-md px-2 py-1 text-[11px] font-bold uppercase tracking-wide ${methodClass(
+                        a.method,
+                      )}`}
+                    >
+                      {a.method}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-sm">{a.path}</p>
+                      {a.summary && (
+                        <p className="truncate text-xs text-muted-foreground">{a.summary}</p>
+                      )}
+                    </div>
+                    {a.requiresApproval && (
+                      <Pill tone="warning">
+                        <ShieldAlert className="size-3" /> Needs approval
+                      </Pill>
+                    )}
+                    <button
+                      onClick={() => remove(a.id, a.name)}
+                      aria-label={`Delete ${a.name}`}
+                      className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          ))}
+        </StaggerGroup>
+      )}
+    </section>
   );
 }

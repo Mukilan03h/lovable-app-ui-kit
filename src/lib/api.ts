@@ -153,6 +153,25 @@ export const api = {
 
   // assistant
   conversations: () => apiGet<{ conversations: ConversationSummary[] }>("/api/assistant/conversations"),
+  shareChat: (title: string, turns: unknown[]) =>
+    apiSend<{ id: string; url: string }>("/api/assistant/share", "POST", { title, turns }),
+  myShares: () => apiGet<{ shares: ShareRow[] }>("/api/assistant/shares"),
+  revokeShare: (id: string) => apiSend(`/api/assistant/shares/${id}/revoke`, "POST"),
+  readShared: (id: string) => apiGet<SharedChat>(`/api/shared/${id}`),
+
+  // skills + OpenAPI actions
+  skills: () => apiGet<{ skills: SkillRow[] }>("/api/skills"),
+  createSkill: (body: { name: string; description?: string; instructions?: string; tools?: string[]; shared?: boolean }) =>
+    apiSend<{ id: string; slug: string }>("/api/skills", "POST", body),
+  deleteSkill: (id: string) => apiSend(`/api/skills/${id}`, "DELETE"),
+  actions: () => apiGet<{ actions: ActionRow[] }>("/api/actions"),
+  importActions: (spec: string, baseUrl?: string) =>
+    apiSend<{ collection: string; imported: number; actions: { name: string; method: string; path: string }[] }>(
+      "/api/actions/import",
+      "POST",
+      baseUrl ? { spec, baseUrl } : { spec },
+    ),
+  deleteAction: (id: string) => apiSend(`/api/actions/${id}`, "DELETE"),
 
   // connectors
   connectors: () => apiGet<ConnectorsResponse>("/api/connectors"),
@@ -227,6 +246,16 @@ export const api = {
 
 // ---- response types -------------------------------------------------------
 export type ConversationSummary = { id: string; title: string; updatedAt: number };
+export type ShareRow = { id: string; title: string; views: number; revoked: boolean; createdAt: number; url: string };
+export type SharedChat = { title: string; author: string; turns: unknown[]; createdAt: number };
+export type SkillRow = {
+  id: string; slug: string; name: string; description: string; instructions: string;
+  tools: string[]; shared: boolean; enabled: boolean;
+};
+export type ActionRow = {
+  id: string; collection: string; name: string; method: string; path: string; baseUrl: string;
+  summary: string; requiresApproval: boolean; parameters: { name: string; in: string; required: boolean }[];
+};
 export type SearchHit = {
   chunkId: string; docId: string; title: string; source: string; url: string | null;
   path: string; type: string; owner: string; updatedAt: number; snippet: string; score: number;
