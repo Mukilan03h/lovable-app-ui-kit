@@ -214,9 +214,21 @@ export const api = {
   updateArtifact: (id: string, body: { pinned?: boolean; shared?: string }) => apiSend(`/api/artifacts/${id}`, "PATCH", body),
   deleteArtifact: (id: string) => apiSend(`/api/artifacts/${id}`, "DELETE"),
 
+  // work inbox
+  inbox: () => apiGet<InboxResponse>("/api/inbox"),
+
+  // answer corrections
+  corrections: () => apiGet<{ corrections: Correction[]; canReview: boolean }>("/api/corrections"),
+  submitCorrection: (body: { query: string; correctedAnswer: string; originalAnswer?: string; evidenceUrl?: string; scope?: string[] }) =>
+    apiSend<{ id: string; status: string }>("/api/corrections", "POST", body),
+  reviewCorrection: (id: string, body: { decision: "approve" | "reject"; scope?: string[]; expiresDays?: number; note?: string }) =>
+    apiSend(`/api/corrections/${id}/review`, "POST", body),
+  deleteCorrection: (id: string) => apiSend(`/api/corrections/${id}`, "DELETE"),
+
   // agents
   agents: () => apiGet<{ agents: AgentRow[] }>("/api/agents"),
   createAgent: (body: Record<string, unknown>) => apiSend("/api/agents", "POST", body),
+  testAgent: (id: string, task?: string) => apiSend<AgentTestResult>(`/api/agents/${id}/test`, "POST", task ? { task } : {}),
   approvals: () => apiGet<{ approvals: ApprovalRow[] }>("/api/approvals"),
   decideApproval: (id: string, decision: "approve" | "deny") => apiSend(`/api/approvals/${id}`, "POST", { decision }),
 
@@ -319,6 +331,28 @@ export type ArtifactRow = {
   versions: number; sources: number; updatedAt: number; author: string;
 };
 export type ArtifactDetail = { id: string; title: string; kind: string; format: string; version: number; spec: Record<string, unknown>; versions: { version: number; note: string; created_at: number }[] };
+export type InboxItem = {
+  id: string; type: "approval" | "run" | "correction"; bucket: "needs_decision" | "running" | "completed" | "failed";
+  title: string; detail: string; nextAction: string; tool?: string;
+  ref: { kind: string; id: string }; createdAt: number | null;
+};
+export type InboxResponse = {
+  items: InboxItem[];
+  counts: { needs_decision: number; running: number; completed: number; failed: number };
+  canReview: boolean;
+};
+export type Correction = {
+  id: string; query: string; originalAnswer: string; correctedAnswer: string; evidenceUrl: string;
+  scope: string[]; status: string; submitter: string; reviewer: string; reviewNote: string;
+  approvedAt: number | null; expiresAt: number | null; createdAt: number;
+};
+export type AgentTestResult = {
+  agent: string; task: string; sourcesAccessed: string[]; sampleAnswer: string;
+  proposedTools: { tool: string; wouldCall: boolean; verifiedAgainstLive: boolean }[];
+  proposedChanges: { tool: string; summary: string }[];
+  followedInstructions: { producedAnswer: boolean; stayedWithinSourceScope: boolean; scope: unknown };
+  estimatedCost: number; note: string;
+};
 export type AgentRow = {
   id: string; name: string; description: string; tools: string[]; trigger: string; output: string;
   enabled: boolean; owner: string; runs: number; success: number; lastRun: number | null;
