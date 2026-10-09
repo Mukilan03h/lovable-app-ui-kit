@@ -156,6 +156,8 @@ export const api = {
   shareChat: (title: string, turns: unknown[]) =>
     apiSend<{ id: string; url: string }>("/api/assistant/share", "POST", { title, turns }),
   myShares: () => apiGet<{ shares: ShareRow[] }>("/api/assistant/shares"),
+  compare: (query: string, models: string[], sources?: string[]) =>
+    apiSend<CompareResponse>("/api/assistant/compare", "POST", sources ? { query, models, sources } : { query, models }),
   revokeShare: (id: string) => apiSend(`/api/assistant/shares/${id}/revoke`, "POST"),
   readShared: (id: string) => apiGet<SharedChat>(`/api/shared/${id}`),
 
@@ -271,6 +273,15 @@ export const api = {
 export type ConversationSummary = { id: string; title: string; updatedAt: number };
 export type ShareRow = { id: string; title: string; views: number; revoked: boolean; createdAt: number; url: string };
 export type SharedChat = { title: string; author: string; turns: unknown[]; createdAt: number };
+export type CompareAnswer = {
+  model: string; servedModel: string; answer: string;
+  paragraphs: { text: string; cites: number[] }[];
+  cost: number; latencyMs: number; verification: { supported: number; total: number };
+};
+export type CompareResponse = {
+  query: string; answers: CompareAnswer[];
+  sources: { n: number; title: string; source: string; snippet: string }[];
+};
 export type SkillRow = {
   id: string; slug: string; name: string; description: string; instructions: string;
   tools: string[]; shared: boolean; enabled: boolean;

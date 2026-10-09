@@ -24,6 +24,24 @@ class AskRequest(BaseModel):
     conversationId: str | None = None
 
 
+class CompareRequest(BaseModel):
+    query: str
+    models: list[str] = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]
+    sources: list[str] | None = None
+
+
+@router.post("/compare")
+async def compare(
+    body: CompareRequest,
+    principal: Principal = Depends(require("assistant")),
+    svc: Services = Depends(get_services),
+) -> dict:
+    models = [m for m in body.models if m][:3] or ["claude-sonnet-5-5"]
+    return await svc.answers.compare(
+        principal.tenant_id, principal.principals, body.query, models, sources=body.sources,
+    )
+
+
 async def _sse(events: AsyncIterator[dict]) -> AsyncIterator[bytes]:
     try:
         async for event in events:

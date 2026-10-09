@@ -189,6 +189,49 @@ class AnswerService:
                                  {"events": collected, "model": route.model, "confidence": confidence})
         await self._log(tenant_id, user_id, query, route, ledger_cost, confidence, latency_ms, cached=False, answered=answered)
 
+    # ---- multi-model compare ---------------------------------------------
+
+    async def compare(
+        self,
+        tenant_id: str,
+        principals: list[str],
+        query: str,
+        models: list[str],
+        *,
+        sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Answer one query with several models over the SAME retrieved evidence.
+
+        Retrieval runs once; each model then synthesizes independently, so the
+        answers are comparable and the cost/latency differences are real.
+        """
+        async with self.db.acquire(tenant_id) as conn:
+            result = await self.searcher.search(conn, query, principals, k=8, sources=sources)
+        ledger = Ledger.from_hits(result.hits)
+        evidence = ledger.prompt_block(False)
+        prompt = f"Question: {query}\n\nEvidence:\n{evidence}\n\nWrite the answer now, citing sources with [n]."
+
+        async def one(model: str) -> dict[str, Any]:
+            cost = CostLedger()
+            t0 = time.perf_counter()
+            if result.hits:
+                r = await self.llm.complete(model, ANSWER_SYSTEM, prompt, effort="medium", max_tokens=1000)
+                cost.add(r)
+                text = r.text.strip() or "No answer could be grounded in the evidence."
+                served = r.model
+            else:
+                text, served = "I couldn't find anything you have access to that answers this.", model
+            v = verify(text, ledger, self.embedder)
+            return {
+                "model": model, "servedModel": served, "answer": text,
+                "paragraphs": parse_paragraphs(text), "cost": round(cost.cost, 6),
+                "latencyMs": int((time.perf_counter() - t0) * 1000),
+                "verification": v.payload(),
+            }
+
+        answers = await asyncio.gather(*(one(m) for m in models))
+        return {"query": query, "answers": answers, "sources": ledger.sources_payload()}
+
     # ---- quick path -------------------------------------------------------
 
     async def _quick(self, tenant_id, principals, query, route, cost, sources, compute_note: str = "") -> AsyncIterator[dict[str, Any]]:
