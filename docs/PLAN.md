@@ -723,3 +723,58 @@ token-gated SaaS sources (Slack/Confluence/Jira/Drive/Notion) — each is the sa
 `fetch()` contract plus that source's auth; and group-based permission *sync*
 from those sources (ACL copy is in place; live group mirroring per source is the
 remaining enterprise piece).
+
+---
+
+## 19. Migrations and the vector-store decision
+
+### 19.1 Migrations — Alembic
+
+Schema is managed with **Alembic** (the Postgres standard), run synchronously via
+psycopg3. A baseline revision applies the project's idempotent SQL schema, so it
+is safe on a fresh database (builds everything, including the pgvector extension)
+and on one already provisioned by the earlier runner (every statement no-ops and
+Alembic just records the version). The app runs `alembic upgrade head` at startup;
+future schema changes are new Alembic revisions. Verified against a fresh DB
+(39 tables created + stamped), an existing DB (clean upgrade), and re-run
+(no-op), with the full test suite migrating through Alembic.
+
+### 19.2 Vector store — pgvector by default, Qdrant when you outgrow it
+
+The question "don't we need a separate vector DB?" has a precise answer, not a
+reflex. From the 2026 research ([pgvector in production](https://bigdataboutique.com/blog/pgvector-in-production),
+[Postgres vector search compared](https://www.web3aiblog.com/blog/postgres-vector-search-compared-pgvector-pgvectorscale-paradedb-lantern-2026),
+[pgvector vs dedicated](https://theneuralbase.com/vector-search-advanced/qna/pgvector-vs-dedicated-vector-database-comparison/)):
+
+- **pgvector + HNSW is production-grade to roughly 5–50M vectors**, single-digit-ms
+  queries, with parallel index builds and filtered iterative scans.
+- A **dedicated vector DB earns its keep only** at billion-scale, sub-5ms p99 at
+  very high QPS, or heavy concurrent re-indexing that contends with OLTP.
+- The decisive factor for *this* product: our retrieval is **permission-aware in
+  the database** — the ACL intersection and tenant RLS run in the *same* query as
+  the ANN search. Moving vectors to a separate store means re-implementing that
+  guarantee there. That is a cost, not a free win.
+
+**Decision: keep pgvector as the default; make the backend pluggable.** A small
+`VectorStore` interface (upsert / search / delete) has two implementations:
+
+| Backend | When | ACL / tenant | Ops |
+| --- | --- | --- | --- |
+| `pgvector` (default) | up to tens of millions of vectors | `doc_acl` join + RLS in-query | one database |
+| `qdrant` (`ENAZ_VECTOR_BACKEND=qdrant`) | billions of vectors, sub-5ms p99 at high QPS, heavy re-index | payload filter on `tenant` + `acl` | +1 cluster; Postgres stays system of record |
+
+Switching backends does not touch ingestion or the API — only where the vectors
+live. Postgres always remains the system of record for documents, full-text,
+metadata and ACLs, so the dedicated index is a cache of vectors, not a second
+source of truth.
+
+### 19.3 pgvector production hardening (in place / documented)
+
+- HNSW `m=16`, `ef_construction=64` set in the schema; `ef_search` raised per
+  query via `hnsw.iterative_scan=relaxed_order` + `max_scan_tuples` so recall
+  stays high when the ACL filter is selective (restricted users).
+- Isolate index maintenance and heavy ingestion from query traffic by pointing
+  reads at a replica (deployment config); the app holds no state that prevents
+  running multiple replicas behind the shared primary.
+- Scale path beyond a single primary is horizontal via the Qdrant backend above,
+  or Postgres read replicas for query fan-out.
