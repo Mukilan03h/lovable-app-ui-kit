@@ -143,6 +143,73 @@ async def run_agent(agent_id: str, body: RunRequest, principal: Principal = Depe
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+class TestRequest(BaseModel):
+    task: str | None = None
+
+
+@router.post("/agents/{agent_id}/test")
+async def test_agent(agent_id: str, body: TestRequest, principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    """Dry-run an agent: show the sources it reached, the tools and changes it
+    WOULD propose, and whether it followed its scope — without creating approvals
+    or executing any side effect. Side-effect tools are marked as not verified
+    against a live integration."""
+    async with svc.db.acquire(principal.tenant_id) as conn:
+        agent = await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+
+    task = body.task or f"Run the '{agent['name']}' task: {agent['description']}"
+    instructions = agent["instructions"] or ""
+    agent_sources = [s for s in _load(agent["sources"]) if isinstance(s, str)]
+    allowed_tools = [t for t in _load(agent["tools"])]
+    output = agent["output"]
+    wants_artifact = output if output in ("slides", "doc", "sheet") else None
+
+    sources_seen: list[dict] = []
+    answer_text = ""
+    cost = 0.0
+    async for event in svc.answers.answer(
+        principal.tenant_id, principal.principals, acl_key(principal.principals), task,
+        mode="research", user_id=principal.user.id, wants_artifact=wants_artifact, allow_cache=False,
+        sources=agent_sources or None, extra_instructions=instructions,
+    ):
+        t = event.get("type")
+        if t == "sources":
+            sources_seen = event.get("sources", [])
+        elif t == "answer":
+            answer_text = event.get("text", "")
+        elif t == "done":
+            cost = event.get("cost", 0.0)
+
+    SIDE_EFFECT = {"slack", "jira", "salesforce", "email", "zendesk"}
+    proposed_tools = [
+        {"tool": t, "wouldCall": t.lower() in SIDE_EFFECT and output == "answer",
+         "verifiedAgainstLive": False}
+        for t in allowed_tools
+    ]
+    source_types = sorted({s.get("source") for s in sources_seen if s.get("source")})
+    # Instruction adherence: when the agent is source-scoped, every source it
+    # reached must be inside that scope; and it must have produced an answer.
+    within_scope = (not agent_sources) or all(s in agent_sources for s in source_types)
+    followed = {
+        "producedAnswer": bool(answer_text),
+        "stayedWithinSourceScope": within_scope,
+        "scope": agent_sources or "all sources the requester can read",
+    }
+    return {
+        "agent": agent["name"], "task": task,
+        "sourcesAccessed": source_types,
+        "sampleAnswer": answer_text[:600],
+        "proposedTools": proposed_tools,
+        "proposedChanges": [{"tool": p["tool"], "summary": task} for p in proposed_tools if p["wouldCall"]],
+        "followedInstructions": followed,
+        "estimatedCost": cost,
+        "note": "Dry run: read-only. No approvals created and no side effects executed. "
+                "Side-effect tools are not verified against a live integration here. "
+                "Version comparison requires agent versioning (planned).",
+    }
+
+
 @router.get("/approvals")
 async def approvals(principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
     async with svc.db.acquire(principal.tenant_id) as conn:

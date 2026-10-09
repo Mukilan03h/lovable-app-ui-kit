@@ -366,3 +366,65 @@ async def test_connector_sync_engine_tracks_index_attempts(client, services):
         empty = await services.searcher.search(conn, "alpha", ["public"], k=5, connector_ids=["__none__"])
     assert scoped.hits and all(getattr(h, "doc_id", None) for h in scoped.hits)
     assert empty.hits == []  # a set with no matching connector scopes to nothing
+
+
+async def test_answer_correction_becomes_authoritative(client, services):
+    """Submit a correction, approve it, then the same question returns the verified answer."""
+    admin = await token_for(client, services, "admin")
+    q = "what is the data retention window for logs"
+    sub = await client.post("/api/corrections", headers=auth(admin),
+                            json={"query": q, "correctedAnswer": "Logs are retained for 400 days.",
+                                  "evidenceUrl": "https://wiki/retention", "scope": ["public"]})
+    assert sub.status_code == 200
+    cid = sub.json()["id"]
+    # Approve it (admin is a reviewer).
+    rev = await client.post(f"/api/corrections/{cid}/review", headers=auth(admin),
+                            json={"decision": "approve", "expiresDays": 90})
+    assert rev.status_code == 200 and rev.json()["status"] == "approved"
+    # Ask the same question: the verified correction is served authoritatively.
+    events = await read_sse(client, "/api/assistant/ask", auth(admin), {"query": q, "mode": "auto"})
+    assert any(e.get("type") == "correction" for e in events)
+    answer = next((e for e in events if e.get("type") == "answer"), {})
+    assert "400 days" in answer.get("text", "")
+
+    # A non-reviewer cannot approve.
+    member = await token_for(client, services, "member")
+    sub2 = await client.post("/api/corrections", headers=auth(member),
+                             json={"query": "unrelated q", "correctedAnswer": "x"})
+    denied = await client.post(f"/api/corrections/{sub2.json()['id']}/review", headers=auth(member),
+                               json={"decision": "approve"})
+    assert denied.status_code == 403
+
+
+async def test_work_inbox_buckets(client, services):
+    admin = await token_for(client, services, "admin")
+    # A pending correction shows up as needs_decision for a reviewer.
+    await client.post("/api/corrections", headers=auth(admin),
+                      json={"query": "inbox test q", "correctedAnswer": "y"})
+    inbox = await client.get("/api/inbox", headers=auth(admin))
+    assert inbox.status_code == 200
+    data = inbox.json()
+    assert data["canReview"] is True
+    assert "needs_decision" in data["counts"]
+    assert any(it["type"] == "correction" and it["bucket"] == "needs_decision" for it in data["items"])
+    # Every item carries a next action.
+    assert all(it.get("nextAction") for it in data["items"])
+
+
+async def test_agent_test_mode_is_dry_run(client, services):
+    admin = await token_for(client, services, "admin")
+    created = await client.post("/api/agents", headers=auth(admin),
+                                json={"name": "Jira writer", "description": "file the PTO ticket",
+                                      "tools": ["Search", "Jira"], "output": "answer"})
+    aid = created.json()["id"]
+    before = await client.get("/api/approvals", headers=auth(admin))
+    n_before = len(before.json()["approvals"])
+    res = await client.post(f"/api/agents/{aid}/test", headers=auth(admin), json={"task": "file it"})
+    assert res.status_code == 200
+    data = res.json()
+    jira = next((t for t in data["proposedTools"] if t["tool"].lower() == "jira"), None)
+    assert jira and jira["wouldCall"] is True and jira["verifiedAgainstLive"] is False
+    assert "producedAnswer" in data["followedInstructions"]
+    # Dry run must not create an approval.
+    after = await client.get("/api/approvals", headers=auth(admin))
+    assert len(after.json()["approvals"]) == n_before

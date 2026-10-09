@@ -89,6 +89,30 @@ class AnswerService:
         ledger_cost.cost += getattr(route, "router_cost", 0.0)
         yield {"type": "route", "route": route.public()}
 
+        # A knowledge owner may have verified the answer to this exact question.
+        # An approved, in-scope, unexpired correction is authoritative: serve it.
+        correction = await self._lookup_correction(tenant_id, query, principals)
+        if correction and not wants_artifact:
+            text = correction["corrected_answer"]
+            yield {"type": "step", "tool": "verify", "label": "Verified correction",
+                   "detail": f"approved by {correction['reviewer_name'] or 'a knowledge owner'}"}
+            yield {"type": "answer", "text": text, "paragraphs": parse_paragraphs(text)}
+            srcs = []
+            if correction["evidence_url"]:
+                srcs = [{"n": 1, "title": "Supporting evidence", "source": "correction",
+                         "snippet": correction["evidence_url"], "url": correction["evidence_url"],
+                         "path": "", "updatedAt": None}]
+            yield {"type": "sources", "sources": srcs}
+            yield {"type": "correction", "correctionId": str(correction["id"]),
+                   "approvedBy": correction["reviewer_name"],
+                   "approvedAt": correction["approved_at"].timestamp() if correction["approved_at"] else None}
+            yield {"type": "done", "cached": False, "cost": round(ledger_cost.cost, 6),
+                   "model": "verified-correction", "confidence": 1.0,
+                   "latencyMs": int((time.perf_counter() - started) * 1000)}
+            await self._log(tenant_id, user_id, query, route, ledger_cost, 1.0,
+                            int((time.perf_counter() - started) * 1000), cached=False, answered=True)
+            return
+
         # In-chat code interpreter: if the session has data files and the question
         # needs computation, run Python over the workspace and fold the result in.
         compute_note = ""
@@ -414,6 +438,25 @@ class AnswerService:
         except Exception:
             return None
         return {"type": "artifact", "artifactId": artifact["id"], "kind": kind, "title": artifact["title"]}
+
+    async def _lookup_correction(self, tenant_id: str, query: str, principals: list[str]) -> dict | None:
+        """An approved, unexpired correction for this exact question whose scope
+        intersects the caller's principals. Exact (normalized) match keeps it
+        precise — a verified correction only fires for the question it answers."""
+        norm = query.lower().strip()
+        if not norm or not principals:
+            return None
+        plist = [p.lower() for p in principals]
+        async with self.db.acquire(tenant_id) as conn:
+            row = await conn.fetchrow(
+                """SELECT * FROM answer_corrections
+                   WHERE status='approved' AND normalized=$1
+                     AND (expires_at IS NULL OR expires_at > now())
+                     AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(scope) s WHERE lower(s) = ANY($2::text[]))
+                   ORDER BY approved_at DESC NULLS LAST LIMIT 1""",
+                norm, plist,
+            )
+        return dict(row) if row else None
 
     async def _log(self, tenant_id, user_id, query, route: Route, cost: CostLedger, confidence, latency_ms, cached, answered):
         baseline = price_of(self.settings.model_deep, max(cost.input_tokens, 4000), max(cost.output_tokens, 400))
