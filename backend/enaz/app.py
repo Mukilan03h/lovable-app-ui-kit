@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         log.info("seed: %s", info)
 
     app.state.services = services
+    services.start_scheduler()
     log.info("Enaz backend ready — LLM %s", "offline" if services.llm.offline else "online")
     try:
         yield

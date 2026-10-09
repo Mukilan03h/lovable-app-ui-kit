@@ -7,7 +7,7 @@ the same pattern as `builtin.py` — implement `fetch()` and register it.
 
 from __future__ import annotations
 
-from . import builtin, universal  # noqa: F401 - registers live connectors
+from . import builtin, feeds, universal  # noqa: F401 - registers live connectors
 from .base import catalog as live_catalog
 
 CATALOG: list[dict] = [
@@ -49,6 +49,8 @@ CATALOG: list[dict] = [
     {"logo": "hubspot", "name": "HubSpot", "type": "hubspot", "category": "Sales & CRM", "sync": "Webhook", "acl": True},
     {"logo": "gong", "name": "Gong", "type": "gong", "category": "Sales & CRM", "sync": "Poll", "acl": True},
     {"logo": "web", "name": "Website crawler", "type": "web", "category": "Other", "sync": "Poll", "acl": False},
+    {"logo": "web", "name": "RSS / Atom feed", "type": "rss", "category": "Other", "sync": "Poll", "acl": False},
+    {"logo": "web", "name": "Sitemap", "type": "sitemap", "category": "Other", "sync": "Poll", "acl": False},
     {"logo": "file", "name": "File upload", "type": "upload", "category": "Other", "sync": "Upload", "acl": True},
     {"logo": "postgres", "name": "SQL database", "type": "sql", "category": "Other", "sync": "Federated", "acl": True},
     {"logo": "custom", "name": "REST / JSON API", "type": "rest", "category": "Other", "sync": "Poll", "acl": False},

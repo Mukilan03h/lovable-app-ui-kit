@@ -176,10 +176,33 @@ export const api = {
   // connectors
   connectors: () => apiGet<ConnectorsResponse>("/api/connectors"),
   connectorCatalog: () => apiGet<{ connectors: CatalogEntry[] }>("/api/connectors/catalog"),
-  createConnector: (body: { type: string; name?: string; config?: Record<string, unknown>; sync?: boolean }) =>
-    apiSend("/api/connectors", "POST", body),
+  createConnector: (body: {
+    type: string;
+    name?: string;
+    config?: Record<string, unknown>;
+    credentialId?: string;
+    refreshFreqMinutes?: number;
+    sync?: boolean;
+  }) => apiSend("/api/connectors", "POST", body),
   syncConnector: (id: string) => apiSend(`/api/connectors/${id}/sync`, "POST"),
   deleteConnector: (id: string) => apiSend(`/api/connectors/${id}`, "DELETE"),
+  patchConnector: (id: string, body: { name?: string; refreshFreqMinutes?: number; credentialId?: string }) =>
+    apiSend(`/api/connectors/${id}`, "PATCH", body),
+  pauseConnector: (id: string) => apiSend(`/api/connectors/${id}/pause`, "POST"),
+  resumeConnector: (id: string) => apiSend(`/api/connectors/${id}/resume`, "POST"),
+  connectorAttempts: (id: string) => apiGet<{ attempts: IndexAttempt[] }>(`/api/connectors/${id}/attempts`),
+  // credentials
+  credentials: () => apiGet<{ credentials: CredentialRow[] }>("/api/connectors/credentials"),
+  createCredential: (body: { type: string; name: string; secret: Record<string, unknown> }) =>
+    apiSend<{ id: string }>("/api/connectors/credentials", "POST", body),
+  deleteCredential: (id: string) => apiSend(`/api/connectors/credentials/${id}`, "DELETE"),
+  // document sets
+  documentSets: () => apiGet<{ documentSets: DocumentSet[] }>("/api/connectors/document-sets"),
+  createDocumentSet: (body: { name: string; description?: string; connectorIds?: string[] }) =>
+    apiSend<{ id: string }>("/api/connectors/document-sets", "POST", body),
+  updateDocumentSet: (id: string, body: { name: string; description?: string; connectorIds?: string[] }) =>
+    apiSend(`/api/connectors/document-sets/${id}`, "PUT", body),
+  deleteDocumentSet: (id: string) => apiSend(`/api/connectors/document-sets/${id}`, "DELETE"),
 
   // artifacts
   artifacts: () => apiGet<{ artifacts: ArtifactRow[] }>("/api/artifacts"),
@@ -268,8 +291,16 @@ export type SearchResponse = {
 export type ConnectorRow = {
   id: string; type: string; name: string; status: string; freshness: string; docs: number;
   permissionSync: boolean; lastSync: number | null;
+  credentialId: string | null; refreshFreqMinutes: number; paused: boolean;
+  newDocs: number; updatedDocs: number; removedDocs: number; nextSync: number | null; error: string | null;
 };
 export type ConnectorsResponse = { connected: ConnectorRow[]; stats: { documents: number; chunks: number; bySource: { source: string; docs: number }[] } };
+export type IndexAttempt = {
+  id: string; status: string; trigger: string; new: number; updated: number; removed: number;
+  total: number; error: string | null; startedAt: number; finishedAt: number | null;
+};
+export type CredentialRow = { id: string; type: string; name: string; keys: string[]; createdAt: number };
+export type DocumentSet = { id: string; name: string; description: string; connectorIds: string[] };
 export type CatalogEntry = { logo: string; name: string; type: string; category: string; sync: string; acl: boolean; live: boolean };
 export type ArtifactRow = {
   id: string; title: string; kind: string; format: string; shared: string; pinned: boolean;

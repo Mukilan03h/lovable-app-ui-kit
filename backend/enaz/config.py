@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     max_upload_mb: int = 50
     rate_limit_per_minute: int = 120
 
+    # Background connector scheduler: runs due connectors on their refresh cadence.
+    scheduler_enabled: bool = True
+    scheduler_interval_seconds: int = 60
+
     # Web search provider for the "Web" toggle: "none" | "searxng".
     web_search_provider: str = "none"
     searxng_url: str | None = None

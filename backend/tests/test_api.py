@@ -266,3 +266,56 @@ async def test_sandbox_blocks_network(client, services):
     assert "REACHED" not in data["stdout"]
     # Isolation is active in this environment.
     assert data["networkIsolated"] is True
+
+
+async def test_connector_sync_engine_tracks_index_attempts(client, services):
+    """Drive the real sync engine with an in-process connector: new/updated/removed
+    classification, incremental unchanged detection, pruning, and index-attempt rows."""
+    from enaz.ingest.connectors.base import Connector, ConnectorMeta, register
+    from enaz.ingest.pipeline import SourceDocument
+    from enaz.ingest.sync import run_sync
+
+    # A fake connector whose output we control between syncs.
+    docs_state = {
+        "docs": [("a", "Alpha", "alpha body one"), ("b", "Beta", "beta body two")],
+    }
+
+    @register
+    class _FakeConnector(Connector):
+        meta = ConnectorMeta(type="_fake", name="Fake", category="Other", sync="poll",
+                             acl=False, logo="custom", config_fields=[])
+
+        async def fetch(self, cursor=None):
+            for ext, title, body in docs_state["docs"]:
+                yield SourceDocument(external_id=ext, title=title, source="_fake",
+                                     acl=["public"], text=body, path="fake")
+
+    tid = services._test_tenant
+    async with services.db.acquire(tid) as conn:
+        cid = str(await conn.fetchval(
+            "INSERT INTO connectors (tenant_id,type,name,config,status) VALUES ($1,'_fake','Fake','{}','idle') RETURNING id",
+            tid,
+        ))
+
+    # First sync: both documents are new.
+    r1 = await run_sync(services, tid, cid)
+    assert r1["new"] == 2 and r1["updated"] == 0 and r1["total"] == 2
+
+    # Second sync, identical content: nothing new or updated.
+    r2 = await run_sync(services, tid, cid)
+    assert r2["new"] == 0 and r2["updated"] == 0 and r2["total"] == 2
+
+    # Change one doc's body and drop the other: one updated, one removed.
+    docs_state["docs"] = [("a", "Alpha", "alpha body CHANGED")]
+    r3 = await run_sync(services, tid, cid)
+    assert r3["new"] == 0 and r3["updated"] == 1 and r3["removed"] == 1 and r3["total"] == 1
+
+    # Index attempts were recorded, newest first, all successful.
+    async with services.db.acquire(tid) as conn:
+        rows = await conn.fetch(
+            "SELECT status, new_docs, updated_docs, removed_docs FROM index_attempts WHERE connector_id=$1 ORDER BY started_at",
+            cid,
+        )
+    assert len(rows) == 3
+    assert [r["status"] for r in rows] == ["success", "success", "success"]
+    assert rows[0]["new_docs"] == 2 and rows[2]["removed_docs"] == 1
