@@ -778,3 +778,99 @@ source of truth.
   running multiple replicas behind the shared primary.
 - Scale path beyond a single primary is horizontal via the Qdrant backend above,
   or Postgres read replicas for query fan-out.
+
+---
+
+## 20. Persistent coworkers — OpenDots integration (planned feature)
+
+**Status: planned; Stage 1 (server-side agent enforcement) implemented, rest not enabled.**
+
+This feature adds persistent enterprise agents to Enaz Knowledge — a general
+platform capability for competing with enterprise search and agent workspaces,
+not an industry-specific workflow. OpenDots (CopilotKit) is a reference and
+optional integration layer; Enaz retains its UI, identity, permission-aware
+retrieval, artifacts and system of record.
+
+### 20.1 User experience
+A user creates a coworker with a role + instructions, permitted knowledge
+sources, approved tools, a destination workspace and a budget. The coworker
+accepts tasks, reports progress, and produces cited answers, editable artifacts
+or action receipts. Work continues after the chat closes; users inspect history,
+pause/cancel a run, review proposed changes and retry interrupted work.
+
+| Capability | Scope |
+| --- | --- |
+| Specialist agents | Persist instructions, source scopes, tool allowlists, memory access; enforce at execution. |
+| Persistent task workspace | Keep task conversations, sources, uploads, artifacts and receipts linked to one run. |
+| Background work | Durable jobs: checkpoints, leases, cancellation, restart recovery, interrupted-effect handling. |
+| Interactive approvals | Show exact tool args + proposed changes; edit/approve/deny; execute only the approved version. |
+| Agent computers | Optional isolated browser/files/terminal, per-agent permissions, human takeover. Off by default. |
+| Memory | User-visible, editable, deletable; separate personal / agent / shared-workspace access. |
+| Schedules | Recurring tasks with timezones, concurrency limits, budgets, accountable initiating identity. |
+| Channels (later) | Web, voice, messaging into the same authorized task context. |
+| Specialist coordination (later) | Explicit bounded handoffs; do not assume automatic multi-agent delegation. |
+
+### 20.2 Architecture and integration boundary
+- **Interface / AG-UI:** keep the React/TanStack UI; add CopilotKit components + an
+  AG-UI adapter over the FastAPI stream, mapping messages, tool calls, state
+  changes, errors and terminal run states. Retain SSE compatibility during rollout.
+- **Backend ownership:** FastAPI owns tenant identity, permissions, retrieval,
+  artifacts, tool policy, approvals, audit. Never trust client-supplied tenant IDs
+  or agent scopes as authorization.
+- **Permission enforcement:** retrieve using the intersection of requester access,
+  agent source restrictions and workspace membership. Re-check before retrieval,
+  before side effects, and when paused work resumes. Revocation invalidates cached
+  results and persisted previews.
+- **Persistence/workers:** agents, runs, checkpoints, schedules, approvals, memory
+  refs and receipts in tenant-scoped Postgres with migrations and object-level
+  checks. A durable worker queue — not a browser connection or in-process task — is
+  the lifetime of a run.
+- **Model/tools:** model calls go through the Enaz gateway; carry explicit tool
+  schemas and policy-filtered availability into the loop.
+- **Agent computers:** optional separate service (OpenBot-informed), isolated
+  filesystem/process/network per tenant+agent. Never expose the host subprocess
+  executor as a tenant computer.
+- **Retries/receipts:** stable action IDs + execution receipts; a retry after an
+  interruption reconciles completed effects before retrying a write. No
+  exactly-once promise across arbitrary external APIs.
+
+### 20.3 OpenDots dependency decision
+Reference: [CopilotKit/OpenDots](https://github.com/CopilotKit/OpenDots) (MIT, alpha,
+single-owner template; its conversation path depends on CopilotKit Intelligence —
+hosted, local Docker eval, or licensed self-hosting; local eval is not evidence of
+free/air-gapped production). Pin the commit and inspect licenses/security before
+importing. Evaluate two options: **(1)** adapt AG-UI + interaction patterns onto
+Enaz-owned persistence/workers (replacing OpenDots conversation persistence is
+engineering, not a setting); **(2)** OpenDots runtime integration with an explicit
+decision on deployment, licensing, retention, auth and data flows. Do not silently
+send enterprise conversations/documents/credentials/tool results to a hosted
+service; document configured model/conversation/research/computer/channel services.
+Multi-user identity, workspace membership and tenant isolation are supplied and
+tested by Enaz.
+
+### 20.4 Build sequence and verification checkpoints
+| Stage | Deliverable | Acceptance |
+| --- | --- | --- |
+| 1 Agent correctness | Apply saved instructions, source restrictions, enabled status, tool policy in the runner. | Two agents with different source/tool grants behave differently; forbidden sources/actions denied server-side. |
+| 2 Interactive execution | AG-UI adapter, live activity, approval UI, real tool execution. | Approve executes displayed args once; deny executes nothing; editing invalidates prior approval. |
+| 3 Durable work | Worker queue, run states, checkpoints, cancellation, receipts, restart recovery. | Closing chat preserves a job; restart reconciles completed effects; cancel prevents later tool calls. |
+| 4 Workspace & memory | Task-linked files/artifacts, scoped memory, inspect/edit/delete. | Cross-user/tenant access denied; memory deletion affects later runs. |
+| 5 Agent computers | Isolated browser/files/terminal, human takeover. | Files/credentials/profiles cannot cross boundaries; missing isolation disables execution. |
+| 6 Scheduled work | Recurrence, budgets, leases, initiating-user checks. | Workers don't double-claim; revoked users/scopes can't continue. |
+| 7 Channels & handoffs | Optional voice/messaging, specialist coordination. | Each channel maps to an authenticated identity; approvals/boundaries preserved. |
+
+**Run states:** queued, running, awaiting_approval, paused, succeeded, failed,
+cancelled, interrupted. Record transitions and tool outcomes. An interrupted run
+is not automatically safe to replay.
+
+### 20.5 Release criteria
+End-to-end tests cover tenant isolation, object access, source revocation,
+approval ownership, edited arguments, duplicate prevention, restart recovery,
+cancellation, budget enforcement. Load tests exercise online model calls,
+concurrent long tasks and computer jobs; remove blocking HTTP/subprocess work from
+API event loops. Separate fixture-backed tests from live-provider verification in
+release notes. Measure task completion, unsupported claims, intervention rate,
+action failures, latency, cost per successful task. Do not claim superiority over
+Glean/Onyx without a comparable independent benchmark. Keep the feature behind a
+disabled-by-default flag until the dependency decision is complete and stages 1–3
+pass their acceptance checks.
