@@ -210,15 +210,81 @@ async def execute_job(svc, job: dict) -> str:
         await _emit(svc, tenant_id, job_id, {"type": "interrupt", "reason": "approval",
                                              "approvalId": str(approval_id), "tool": tool})
         async with svc.db.acquire(tenant_id) as conn:
+            # Persist the answer so the resumed run can carry it through to the result.
             await conn.execute(
-                "UPDATE agent_jobs SET status='awaiting_approval', lease_until=NULL, updated_at=now() WHERE id=$1",
-                job_id,
+                """UPDATE agent_jobs SET status='awaiting_approval', lease_until=NULL,
+                       result=$2, cost=$3, updated_at=now() WHERE id=$1""",
+                job_id, json.dumps({"answer": answer_text, "sources": sources}), cost,
             )
         return AWAITING_APPROVAL
 
     await _emit(svc, tenant_id, job_id, {"type": "run.finished", "cost": cost})
     await _finish(svc, tenant_id, job_id, SUCCEEDED,
                   result={"answer": answer_text, "sources": sources}, cost=cost)
+    return SUCCEEDED
+
+
+async def resume_after_decision(svc, tenant_id: str, job_id: str, approval_id: str,
+                                decision: str, edited_args: dict | None = None) -> str:
+    """Resume a job parked at an approval. Approve executes the (possibly edited)
+    action once — idempotent via the receipt's action_id — and finishes the run;
+    deny records the declined action and finishes without the side effect.
+
+    Editing the arguments naturally invalidates the originally proposed version:
+    the action that runs is the one approved here.
+    """
+    from .tools import execute_action
+
+    async with svc.db.acquire(tenant_id) as conn:
+        job = await conn.fetchrow("SELECT * FROM agent_jobs WHERE id=$1", job_id)
+        if not job:
+            return "unknown"
+        if job["status"] != AWAITING_APPROVAL:
+            return job["status"]  # idempotent: already resolved
+        receipt = await conn.fetchrow(
+            "SELECT * FROM agent_receipts WHERE job_id=$1 AND status='proposed' ORDER BY created_at DESC LIMIT 1",
+            job_id,
+        )
+    tool = receipt["tool"] if receipt else "action"
+    action_id = receipt["action_id"] if receipt else f"{job_id}:proposed:{tool}"
+    base_args = _load(receipt["args"]) if receipt else {}
+    args = {**base_args, **(edited_args or {})}
+    result = _load(job.get("result"))
+
+    if decision == "approve":
+        async with svc.db.acquire(tenant_id) as conn:
+            # Reconcile: if this action already completed (a retry), don't re-run it.
+            done = await conn.fetchval(
+                "SELECT 1 FROM agent_receipts WHERE job_id=$1 AND action_id=$2 AND status='done'",
+                job_id, action_id,
+            )
+        if not done:
+            outcome = execute_action(tool, args)
+            async with svc.db.acquire(tenant_id) as conn:
+                await conn.execute(
+                    """INSERT INTO agent_receipts (tenant_id, job_id, action_id, step, tool, args, result, status)
+                       VALUES ($1,$2,$3,'side_effect',$4,$5,$6,'done')
+                       ON CONFLICT (job_id, action_id)
+                       DO UPDATE SET args=excluded.args, result=excluded.result, status='done'""",
+                    tenant_id, job_id, action_id, tool, json.dumps(args), json.dumps(outcome),
+                )
+            await _emit(svc, tenant_id, job_id, {"type": "tool.result", "tool": tool,
+                                                 "simulated": outcome.get("simulated", False),
+                                                 "ref": outcome.get("ref")})
+            result = {**result, "actionTaken": True, "action": {"tool": tool, "args": args, "result": outcome}}
+        await _emit(svc, tenant_id, job_id, {"type": "run.finished", "resumed": True})
+        await _finish(svc, tenant_id, job_id, SUCCEEDED, result=result, cost=float(job.get("cost") or 0.0))
+        return SUCCEEDED
+
+    # Denied: record the declined action, finish without the side effect.
+    async with svc.db.acquire(tenant_id) as conn:
+        await conn.execute(
+            "UPDATE agent_receipts SET status='denied' WHERE job_id=$1 AND action_id=$2", job_id, action_id,
+        )
+    await _emit(svc, tenant_id, job_id, {"type": "tool.denied", "tool": tool})
+    await _emit(svc, tenant_id, job_id, {"type": "run.finished", "resumed": True})
+    await _finish(svc, tenant_id, job_id, SUCCEEDED,
+                  result={**result, "actionTaken": False, "denied": True}, cost=float(job.get("cost") or 0.0))
     return SUCCEEDED
 
 

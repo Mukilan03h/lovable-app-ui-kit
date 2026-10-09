@@ -301,15 +301,30 @@ async def approvals(principal: Principal = Depends(require("agents")), svc: Serv
 
 class DecideRequest(BaseModel):
     decision: str  # approve | deny
+    args: dict | None = None  # edited action arguments; editing invalidates the proposed version
 
 
 @router.post("/approvals/{approval_id}")
 async def decide(approval_id: str, body: DecideRequest, principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    from ...run_engine import resume_after_decision
+
     status = "approved" if body.decision == "approve" else "denied"
     async with svc.db.acquire(principal.tenant_id) as conn:
-        await conn.execute("UPDATE approvals SET status=$2, decided_at=now() WHERE id=$1", approval_id, status)
+        row = await conn.fetchrow(
+            "UPDATE approvals SET status=$2, decided_at=now() WHERE id=$1 RETURNING args", approval_id, status,
+        )
     await audit(svc, principal, f"approval.{status}", approval_id)
-    return {"ok": True, "status": status}
+    # If this approval parks a durable job, resume it — executing the approved
+    # (possibly edited) action, or finishing without it on denial.
+    job_status = None
+    if row:
+        job_id = _load(row["args"]).get("jobId")
+        if job_id:
+            job_status = await resume_after_decision(
+                svc, principal.tenant_id, job_id, approval_id,
+                "approve" if status == "approved" else "deny", edited_args=body.args,
+            )
+    return {"ok": True, "status": status, "jobStatus": job_status}
 
 
 def _ev(obj: dict) -> bytes:

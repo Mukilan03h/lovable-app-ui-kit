@@ -509,3 +509,59 @@ async def test_durable_run_cancel_and_sideeffect(client, services):
     assert data["status"] == "awaiting_approval"
     assert any(e.get("type") == "interrupt" for e in data["events"])
     assert any(rc["status"] == "proposed" and rc["tool"] == "jira" for rc in data["receipts"])
+
+
+async def test_durable_approve_resume_executes_action(client, services):
+    """Approving a parked job executes the (edited) action once, writes a done
+    receipt and a tool.result event, and finishes the run; a second approve is a
+    no-op (idempotent)."""
+    from enaz.run_engine import run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    aid = await _make_agent(client, admin, name="Jira resume", tools=["Search", "Jira"])
+    jid = (await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "file the ticket"})).json()["jobId"]
+    for _ in range(10):
+        if not await run_worker_once(services):
+            break
+    job = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert job["status"] == "awaiting_approval"
+    approval_id = next(e["approvalId"] for e in job["events"] if e.get("type") == "interrupt")
+
+    # Approve with edited args.
+    dec = await client.post(f"/api/approvals/{approval_id}", headers=auth(admin),
+                            json={"decision": "approve", "args": {"summary": "EDITED summary", "priority": "high"}})
+    assert dec.status_code == 200 and dec.json()["jobStatus"] == "succeeded"
+
+    done = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert done["status"] == "succeeded"
+    assert done["result"]["actionTaken"] is True
+    assert done["result"]["action"]["args"]["summary"] == "EDITED summary"
+    assert any(e.get("type") == "tool.result" for e in done["events"])
+    assert any(rc["status"] == "done" and rc["tool"] == "jira" for rc in done["receipts"])
+
+    # Idempotent: approving again does not change the terminal state or re-run.
+    again = await client.post(f"/api/approvals/{approval_id}", headers=auth(admin), json={"decision": "approve"})
+    assert again.json()["jobStatus"] == "succeeded"
+    done2 = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert sum(1 for rc in done2["receipts"] if rc["status"] == "done") == 1
+
+
+async def test_durable_deny_finishes_without_side_effect(client, services):
+    from enaz.run_engine import run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    aid = await _make_agent(client, admin, name="Slack deny", tools=["Search", "Slack"])
+    jid = (await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "post it"})).json()["jobId"]
+    for _ in range(10):
+        if not await run_worker_once(services):
+            break
+    job = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    approval_id = next(e["approvalId"] for e in job["events"] if e.get("type") == "interrupt")
+
+    dec = await client.post(f"/api/approvals/{approval_id}", headers=auth(admin), json={"decision": "deny"})
+    assert dec.json()["jobStatus"] == "succeeded"
+    done = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert done["result"]["actionTaken"] is False and done["result"]["denied"] is True
+    # No executed (done) receipt; the proposed one is marked denied.
+    assert not any(rc["status"] == "done" for rc in done["receipts"])
+    assert any(rc["status"] == "denied" for rc in done["receipts"])
