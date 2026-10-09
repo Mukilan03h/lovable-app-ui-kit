@@ -75,12 +75,13 @@ class AnswerService:
         user_id: str | None = None,
         wants_artifact: str | None = None,
         allow_cache: bool = True,
+        system1: bool | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         started = time.perf_counter()
         ledger_cost = CostLedger()
         qvec = self.embedder.embed([query], kind="query")[0]
 
-        route = await self.router.classify(query, mode, wants_artifact)
+        route = await self.router.classify(query, mode, wants_artifact, system1=system1)
         ledger_cost.cost += getattr(route, "router_cost", 0.0)
         yield {"type": "route", "route": route.public()}
 

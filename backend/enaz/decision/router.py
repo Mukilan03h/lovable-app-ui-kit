@@ -104,9 +104,30 @@ class DecisionRouter:
             path, model, effort = "quick", self.settings.model_standard, "medium"
         return Route(intent, path, model, effort, artifact if artifact != "none" else None, reason, by)
 
-    async def classify(self, query: str, mode: str = "auto", wants_artifact: str | None = None) -> Route:
-        """Auto mode uses the small model for intent; forced modes skip it."""
+    async def classify(
+        self,
+        query: str,
+        mode: str = "auto",
+        wants_artifact: str | None = None,
+        *,
+        system1: bool | None = None,
+    ) -> Route:
+        """Auto mode uses the small model for intent; forced modes skip it.
+
+        ``system1`` is the Laya fast-decision toggle. When enabled, routing is a
+        pure zero-token heuristic ("System 1" / fast thinking) and we never spend
+        a small-model call to classify intent — cutting per-query cost further and
+        shaving ~200-400ms of router latency. When disabled, auto mode consults
+        the small model ("System 2") for sharper intent detection on ambiguous
+        queries. Defaults to the workspace/config default when ``None``.
+        """
+        if system1 is None:
+            system1 = self.settings.laya_system1_default
         base = self.heuristic(query, mode, wants_artifact)
+        if system1:
+            base.reason = base.reason or "laya system-1 (zero-token heuristic)"
+            base.by = "laya-system1"
+            return base
         if mode != "auto" or self.llm.offline:
             return base
         result = await self.llm.complete(

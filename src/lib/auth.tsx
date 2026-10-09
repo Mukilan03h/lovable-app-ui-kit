@@ -7,8 +7,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { members, type Member, type Role } from "@/data/mock";
-import { apiDemoLogin, apiEnabled, apiMe, getToken, setToken, type SessionUser } from "@/lib/api";
+import { type Member, type Role } from "@/data/mock";
+import { apiDemoLogin, apiLogin, apiMe, getToken, setToken, type SessionUser } from "@/lib/api";
 
 export type Permission =
   | "assistant"
@@ -110,6 +110,7 @@ type AuthValue = {
   user: Member | null;
   ready: boolean;
   signIn: (role: Role) => Promise<Member>;
+  signInWithPassword: (email: string, password: string) => Promise<Member>;
   signOut: () => void;
   can: (permission: Permission) => boolean;
 };
@@ -117,12 +118,15 @@ type AuthValue = {
 const AuthContext = createContext<AuthValue>({
   user: null,
   ready: false,
-  signIn: async () => members[0]!,
+  signIn: async () => {
+    throw new Error("AuthProvider is missing");
+  },
+  signInWithPassword: async () => {
+    throw new Error("AuthProvider is missing");
+  },
   signOut: () => {},
   can: () => false,
 });
-
-const STORAGE_KEY = "enaz-session";
 
 /** Map a backend session user onto the Member shape the UI already uses. */
 function toMember(u: SessionUser): Member {
@@ -147,16 +151,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     async function restore() {
-      if (apiEnabled && getToken()) {
+      if (getToken()) {
         try {
           const { user: u } = await apiMe();
           if (!cancelled) setUser(toMember(u));
         } catch {
           setToken(null);
         }
-      } else if (!apiEnabled) {
-        const id = window.localStorage.getItem(STORAGE_KEY);
-        setUser(members.find((m) => m.id === id) ?? null);
       }
       if (!cancelled) setReady(true);
     }
@@ -167,21 +168,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (role: Role) => {
-    if (apiEnabled) {
-      const { token, user: u } = await apiDemoLogin(role);
-      setToken(token);
-      const member = toMember(u);
-      setUser(member);
-      return member;
-    }
-    const next = members.find((m) => m.role === role) ?? members[0]!;
-    window.localStorage.setItem(STORAGE_KEY, next.id);
-    setUser(next);
-    return next;
+    const { token, user: u } = await apiDemoLogin(role);
+    setToken(token);
+    const member = toMember(u);
+    setUser(member);
+    return member;
+  }, []);
+
+  const signInWithPassword = useCallback(async (email: string, password: string) => {
+    const { token, user: u } = await apiLogin(email, password);
+    setToken(token);
+    const member = toMember(u);
+    setUser(member);
+    return member;
   }, []);
 
   const signOut = useCallback(() => {
-    window.localStorage.removeItem(STORAGE_KEY);
     setToken(null);
     setUser(null);
   }, []);
@@ -192,8 +194,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ user, ready, signIn, signOut, can }),
-    [user, ready, signIn, signOut, can],
+    () => ({ user, ready, signIn, signInWithPassword, signOut, can }),
+    [user, ready, signIn, signInWithPassword, signOut, can],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,14 +1,12 @@
 /**
- * Backend API client.
+ * Backend API client. The app talks to the real Enaz backend for everything —
+ * auth, search, streaming answers, artifacts, agents, admin, the code sandbox.
  *
- * When `VITE_API_URL` is set, the app talks to the real Enaz backend
- * (permission-aware search, streaming answers, artifacts, admin, …). When it is
- * unset — e.g. the Lovable preview with no backend — `apiEnabled` is false and
- * the UI falls back to the bundled mock data, so it always renders.
+ * `VITE_API_URL` points at the backend. When unset it is same-origin (""), so a
+ * reverse proxy / the dev proxy in vite.config.ts forwards `/api` to the backend.
  */
 
 const BASE = ((import.meta.env["VITE_API_URL"] as string | undefined) ?? "").replace(/\/$/, "");
-export const apiEnabled = BASE.length > 0;
 
 const TOKEN_KEY = "enaz-token";
 
@@ -142,3 +140,138 @@ export async function apiMe(): Promise<{
 }> {
   return apiGet("/api/auth/me");
 }
+
+// ---- resource endpoints ---------------------------------------------------
+export const api = {
+  // search
+  search: (q: string, params: { sources?: string[]; types?: string[] } = {}) => {
+    const qs = new URLSearchParams({ q });
+    (params.sources ?? []).forEach((s) => qs.append("sources", s));
+    (params.types ?? []).forEach((t) => qs.append("types", t));
+    return apiGet<SearchResponse>(`/api/search?${qs.toString()}`);
+  },
+
+  // assistant
+  conversations: () => apiGet<{ conversations: ConversationSummary[] }>("/api/assistant/conversations"),
+
+  // connectors
+  connectors: () => apiGet<ConnectorsResponse>("/api/connectors"),
+  connectorCatalog: () => apiGet<{ connectors: CatalogEntry[] }>("/api/connectors/catalog"),
+  createConnector: (body: { type: string; name?: string; config?: Record<string, unknown>; sync?: boolean }) =>
+    apiSend("/api/connectors", "POST", body),
+  syncConnector: (id: string) => apiSend(`/api/connectors/${id}/sync`, "POST"),
+  deleteConnector: (id: string) => apiSend(`/api/connectors/${id}`, "DELETE"),
+
+  // artifacts
+  artifacts: () => apiGet<{ artifacts: ArtifactRow[] }>("/api/artifacts"),
+  artifact: (id: string) => apiGet<ArtifactDetail>(`/api/artifacts/${id}`),
+  patchArtifact: (id: string, instruction: string) => apiSend(`/api/artifacts/${id}/patch`, "POST", { instruction }),
+  updateArtifact: (id: string, body: { pinned?: boolean; shared?: string }) => apiSend(`/api/artifacts/${id}`, "PATCH", body),
+  deleteArtifact: (id: string) => apiSend(`/api/artifacts/${id}`, "DELETE"),
+
+  // agents
+  agents: () => apiGet<{ agents: AgentRow[] }>("/api/agents"),
+  createAgent: (body: Record<string, unknown>) => apiSend("/api/agents", "POST", body),
+  approvals: () => apiGet<{ approvals: ApprovalRow[] }>("/api/approvals"),
+  decideApproval: (id: string, decision: "approve" | "deny") => apiSend(`/api/approvals/${id}`, "POST", { decision }),
+
+  // settings
+  settings: () => apiGet<SettingsResponse>("/api/settings"),
+  saveSettings: (settings: Record<string, unknown>) => apiSend("/api/settings", "PUT", { settings }),
+  updateProfile: (body: { name?: string; title?: string }) => apiSend("/api/settings/profile", "PUT", body),
+  memory: () => apiGet<{ memories: { id: string; text: string; source: string }[] }>("/api/settings/memory"),
+  addMemory: (text: string) => apiSend("/api/settings/memory", "POST", { text }),
+  deleteMemory: (id: string) => apiSend(`/api/settings/memory/${id}`, "DELETE"),
+  shortcuts: () => apiGet<{ shortcuts: ShortcutRow[] }>("/api/settings/shortcuts"),
+  addShortcut: (body: { command: string; prompt: string; shared?: boolean }) => apiSend("/api/settings/shortcuts", "POST", body),
+  deleteShortcut: (id: string) => apiSend(`/api/settings/shortcuts/${id}`, "DELETE"),
+  tokens: () => apiGet<TokensResponse>("/api/settings/tokens"),
+  createTokenApi: (body: { name: string; scopes: string[]; expiresDays?: number }) =>
+    apiSend<{ id: string; token: string; prefix: string }>("/api/settings/tokens", "POST", body),
+  revokeToken: (id: string) => apiSend(`/api/settings/tokens/${id}`, "DELETE"),
+
+  // insights
+  insights: (days = 7) => apiGet<InsightsResponse>(`/api/insights?days=${days}`),
+  history: (limit = 50) => apiGet<{ history: HistoryRow[] }>(`/api/insights/history?limit=${limit}`),
+
+  // admin
+  adminOverview: () => apiGet<AdminOverview>("/api/admin/overview"),
+  adminUsers: () => apiGet<{ users: AdminUser[] }>("/api/admin/users"),
+  updateUser: (id: string, body: { role?: string; disabled?: boolean }) => apiSend(`/api/admin/users/${id}`, "PATCH", body),
+  adminGroups: () => apiGet<{ groups: GroupRow[] }>("/api/admin/groups"),
+  adminSso: () => apiGet<{ providers: SsoRow[] }>("/api/admin/sso"),
+  adminVerified: () => apiGet<{ answers: VerifiedRow[] }>("/api/admin/verified"),
+  runEval: () => apiSend<EvalMetrics>("/api/admin/evals/run", "POST"),
+  evalHistory: () => apiGet<{ runs: EvalMetrics[] }>("/api/admin/evals"),
+  auditLog: () => apiGet<{ log: AuditRow[] }>("/api/admin/audit"),
+  wsSetting: (key: string) => apiGet<{ key: string; value: Record<string, unknown> }>(`/api/admin/settings/${key}`),
+  saveWsSetting: (key: string, value: Record<string, unknown>) => apiSend(`/api/admin/settings/${key}`, "PUT", { value }),
+
+  // conversations / sandbox
+  conversationFiles: (cid: string) => apiGet<{ files: SessionFile[] }>(`/api/conversations/${cid}/files`),
+  runCode: (cid: string, code: string) => apiSend<RunResult>(`/api/conversations/${cid}/run`, "POST", { code }),
+  editFile: (cid: string, name: string, content: string) => apiSend(`/api/conversations/${cid}/files/${name}`, "PUT", { content }),
+  deleteFile: (cid: string, name: string) => apiSend(`/api/conversations/${cid}/files/${name}`, "DELETE"),
+  uploadConversationFile: (cid: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return apiUpload<{ name: string; size: number; extracted: boolean; preview: string }>(`/api/conversations/${cid}/files`, form);
+  },
+  uploadDocument: (file: File, access = "public") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("access", access);
+    return apiUpload<{ docId: string; title: string }>("/api/connectors/upload", form);
+  },
+};
+
+// ---- response types -------------------------------------------------------
+export type ConversationSummary = { id: string; title: string; updatedAt: number };
+export type SearchHit = {
+  chunkId: string; docId: string; title: string; source: string; url: string | null;
+  path: string; type: string; owner: string; updatedAt: number; snippet: string; score: number;
+};
+export type SearchResponse = {
+  query: string; results: SearchHit[]; web: { title: string; url: string; snippet: string }[];
+  webEnabled: boolean; facets: { sources: { value: string; count: number }[]; types: { value: string; count: number }[] };
+  experts: { name: string; topic: string }[]; confidence: number; tookMs: number;
+};
+export type ConnectorRow = {
+  id: string; type: string; name: string; status: string; freshness: string; docs: number;
+  permissionSync: boolean; lastSync: number | null;
+};
+export type ConnectorsResponse = { connected: ConnectorRow[]; stats: { documents: number; chunks: number; bySource: { source: string; docs: number }[] } };
+export type CatalogEntry = { logo: string; name: string; type: string; category: string; sync: string; acl: boolean; live: boolean };
+export type ArtifactRow = {
+  id: string; title: string; kind: string; format: string; shared: string; pinned: boolean;
+  versions: number; sources: number; updatedAt: number; author: string;
+};
+export type ArtifactDetail = { id: string; title: string; kind: string; format: string; version: number; spec: Record<string, unknown>; versions: { version: number; note: string; created_at: number }[] };
+export type AgentRow = {
+  id: string; name: string; description: string; tools: string[]; trigger: string; output: string;
+  enabled: boolean; owner: string; runs: number; success: number; lastRun: number | null;
+};
+export type ApprovalRow = { id: string; tool: string; args: Record<string, unknown>; status: string; createdAt: number };
+export type SettingsResponse = { profile: SessionUser; settings: Record<string, unknown> };
+export type ShortcutRow = { id: string; command: string; prompt: string; shared: boolean };
+export type TokensResponse = { mcpUrl: string; tokens: { id: string; name: string; prefix: string; scopes: string[]; createdAt: number; expiresAt: number | null; lastUsed: number | null }[] };
+export type InsightsResponse = {
+  stats: { queries: number; answerRate: number; p50LatencyMs: number; avgCost: number; totalCost: number; baselineCost: number; savingsPct: number; cacheHitRate: number };
+  volume: { day: string; queries: number; answered: number }[];
+  modelMix: { name: string; value: number }[];
+  knowledgeGaps: { question: string; asks: number; status: string }[];
+};
+export type HistoryRow = { query: string; path: string; model: string; cost: number; confidence: number; answered: boolean; createdAt: number; avatar: string };
+export type AdminOverview = { users: number; groups: number; connectors: number; plan: string; documents: number; chunks: number; llm: { offline: boolean; models: Record<string, string> } };
+export type AdminUser = { id: string; email: string; name: string; role: string; title: string; avatar: string; disabled: boolean };
+export type GroupRow = { id: string; name: string; source: string; members: number };
+export type SsoRow = { id: string; type: string; name: string; issuer: string | null; enabled: boolean };
+export type VerifiedRow = { id: string; question: string; answer: string; category: string };
+export type EvalMetrics = { name: string; questions: number; recallAt10: number; citationRate: number; answerRate: number; createdAt?: number };
+export type AuditRow = { action: string; target: string; createdAt: number; user: string };
+export type SessionFile = { name: string; size: number; isImage: boolean; source: string };
+export type RunResult = {
+  stdout: string; stderr: string; returnCode: number; timedOut: boolean; durationMs: number; networkIsolated: boolean;
+  files: { name: string; size: number; isNew: boolean; isImage: boolean }[];
+  images: { name: string; dataUrl: string }[];
+};

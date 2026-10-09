@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { ArrowRight, Search, Sparkles } from "lucide-react";
 import { Guard } from "@/components/app/Guard";
@@ -7,7 +7,8 @@ import { Avatar, Panel, PageHeader } from "@/components/app/ui-bits";
 import { PageTransition, StaggerGroup } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { BrandLogo } from "@/components/app/BrandLogo";
-import { docs, sourceLabel, sourceLogo, type Doc, type SourceApp } from "@/data/knowledge";
+import { sourceLabel, sourceLogo, type Doc, type SourceApp } from "@/data/knowledge";
+import { api, type SearchResponse } from "@/lib/api";
 
 export const Route = createFileRoute("/_app/search")({
   validateSearch: (search: Record<string, unknown>): { q?: string } =>
@@ -41,41 +42,97 @@ const typeLabel: Record<Doc["type"], string> = {
   email: "Email",
 };
 
-const experts = [
-  { name: "Liam Rodriguez", initials: "LR", topic: "Permission sync, SharePoint" },
-  { name: "Mia Chen", initials: "MC", topic: "Retrieval & ranking" },
-  { name: "Ava Thompson", initials: "AT", topic: "Pricing, bake-offs" },
-];
+/** Turn epoch seconds into a short relative label like "3 days ago". */
+function relativeTime(epochSeconds: number): string {
+  const diffMs = Date.now() - epochSeconds * 1000;
+  const sec = Math.round(diffMs / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} h ago`;
+  const day = Math.round(hr / 24);
+  if (day < 7) return `${day} day${day === 1 ? "" : "s"} ago`;
+  const wk = Math.round(day / 7);
+  if (wk < 5) return `${wk} week${wk === 1 ? "" : "s"} ago`;
+  const mo = Math.round(day / 30);
+  if (mo < 12) return `${mo} month${mo === 1 ? "" : "s"} ago`;
+  const yr = Math.round(day / 365);
+  return `${yr} year${yr === 1 ? "" : "s"} ago`;
+}
+
+function initials(name: string): string {
+  return (
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((p) => p[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "?"
+  );
+}
+
+const relatedQueries = ["permission sync", "KNOW-482", "Globex renewal", "freshness SLA"];
 
 function SearchPage() {
   const { q } = Route.useSearch();
   const [query, setQuery] = useState(q ?? "launch readiness");
-  const [source, setSource] = useState<SourceApp | "all">("all");
-  const [type, setType] = useState<Doc["type"] | "all">("all");
+  const [source, setSource] = useState<string>("all");
+  const [type, setType] = useState<string>("all");
+  const [data, setData] = useState<SearchResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (q) setQuery(q);
   }, [q]);
 
-  const results = useMemo(() => {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return docs
-      .map((d) => {
-        const hay = `${d.title} ${d.snippet} ${d.path}`.toLowerCase();
-        return { d, score: terms.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0) };
-      })
-      .filter(
-        ({ d, score }) =>
-          (terms.length === 0 || score > 0) &&
-          (source === "all" || d.source === source) &&
-          (type === "all" || d.type === type),
-      )
-      .sort((a, b) => b.score - a.score)
-      .map(({ d }) => d);
+  useEffect(() => {
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      const params: { sources?: string[]; types?: string[] } = {};
+      if (source !== "all") params.sources = [source];
+      if (type !== "all") params.types = [type];
+      api
+        .search(query, params)
+        .then((res) => {
+          if (!cancelled) setData(res);
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setData(null);
+            setError(err instanceof Error ? err.message : "Search failed");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
   }, [query, source, type]);
 
-  const sources = Array.from(new Set(docs.map((d) => d.source)));
-  const types = Array.from(new Set(docs.map((d) => d.type)));
+  const results = data?.results ?? [];
+  const experts = data?.experts ?? [];
+  const sourceOptions = Array.from(
+    new Set<string>([
+      "all",
+      ...(source !== "all" ? [source] : []),
+      ...(data?.facets.sources.map((f) => f.value) ?? []),
+    ]),
+  );
+  const typeOptions = Array.from(
+    new Set<string>([
+      "all",
+      ...(type !== "all" ? [type] : []),
+      ...(data?.facets.types.map((f) => f.value) ?? []),
+    ]),
+  );
 
   return (
     <PageTransition className="space-y-6">
@@ -93,7 +150,7 @@ function SearchPage() {
           className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground"
         />
         <span className="hidden text-xs text-muted-foreground sm:inline">
-          {results.length} results · 112 ms
+          {loading ? "Searching…" : `${results.length} results · ${data?.tookMs ?? 0} ms`}
         </span>
       </form>
 
@@ -103,14 +160,14 @@ function SearchPage() {
             title="Source"
             value={source}
             onChange={setSource}
-            options={["all", ...sources]}
+            options={sourceOptions}
             label={(s) =>
               s === "all" ? (
                 "All sources"
               ) : (
                 <>
                   <BrandLogo id={sourceLogo[s as SourceApp]} size="xs" />
-                  {sourceLabel[s as SourceApp]}
+                  {sourceLabel[s as SourceApp] ?? s}
                 </>
               )
             }
@@ -119,8 +176,8 @@ function SearchPage() {
             title="Type"
             value={type}
             onChange={setType}
-            options={["all", ...types]}
-            label={(t) => (t === "all" ? "All types" : typeLabel[t as Doc["type"]])}
+            options={typeOptions}
+            label={(t) => (t === "all" ? "All types" : (typeLabel[t as Doc["type"]] ?? t))}
           />
         </aside>
 
@@ -150,23 +207,31 @@ function SearchPage() {
           <StaggerGroup className="space-y-3">
             {results.map((d) => (
               <motion.article
-                key={d.id}
+                key={d.chunkId}
                 layout
                 whileHover={{ y: -2 }}
                 className="rounded-3xl border border-border bg-card p-4 shadow-[var(--shadow-soft)]"
               >
                 <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <BrandLogo id={sourceLogo[d.source]} size="xs" />
-                  <span className="font-semibold">{sourceLabel[d.source]}</span>
+                  <BrandLogo id={sourceLogo[d.source as SourceApp]} size="xs" />
+                  <span className="font-semibold">
+                    {sourceLabel[d.source as SourceApp] ?? d.source}
+                  </span>
                   <span className="truncate text-muted-foreground">{d.path}</span>
-                  <span className="ml-auto text-muted-foreground">{d.updated}</span>
+                  <span className="ml-auto text-muted-foreground">{relativeTime(d.updatedAt)}</span>
                 </div>
                 <h3 className="mt-2 font-semibold">{d.title}</h3>
                 <p className="mt-1 text-sm text-muted-foreground">{d.snippet}</p>
                 <p className="mt-2 text-xs text-muted-foreground">Owner · {d.owner}</p>
               </motion.article>
             ))}
-            {results.length === 0 && (
+            {loading && results.length === 0 && (
+              <p className="py-10 text-center text-sm text-muted-foreground">Searching…</p>
+            )}
+            {error && (
+              <p className="py-10 text-center text-sm text-destructive">{error}</p>
+            )}
+            {!loading && !error && results.length === 0 && (
               <p className="py-10 text-center text-sm text-muted-foreground">
                 No results you have access to.
               </p>
@@ -176,21 +241,25 @@ function SearchPage() {
 
         <aside className="space-y-4">
           <Panel title="People who know">
-            <ul className="space-y-3">
-              {experts.map((e) => (
-                <li key={e.name} className="flex items-center gap-3">
-                  <Avatar initials={e.initials} />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{e.name}</p>
-                    <p className="truncate text-xs text-muted-foreground">{e.topic}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            {experts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No experts found.</p>
+            ) : (
+              <ul className="space-y-3">
+                {experts.map((e) => (
+                  <li key={e.name} className="flex items-center gap-3">
+                    <Avatar initials={initials(e.name)} />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{e.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">{e.topic}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Panel>
           <Panel title="Related">
             <div className="flex flex-wrap gap-2">
-              {["permission sync", "KNOW-482", "Globex renewal", "freshness SLA"].map((t) => (
+              {relatedQueries.map((t) => (
                 <button
                   key={t}
                   onClick={() => setQuery(t)}

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Bell,
@@ -33,6 +33,7 @@ import {
   Toggle,
 } from "@/components/app/settings-ui";
 import { Slider } from "@/components/ui/slider";
+import { api } from "@/lib/api";
 import { PageTransition } from "@/lib/motion";
 import { useAuth, roleLabel } from "@/lib/auth";
 import { accents, useTheme, type ChatBackground, type ThemeMode } from "@/lib/theme";
@@ -357,6 +358,34 @@ function ChatPrefs() {
     checked: flags[k],
     onChange: (v: boolean) => setFlags((f) => ({ ...f, [k]: v })),
   });
+
+  // Laya "System 1" fast-decision toggle — persisted to the backend so it
+  // actually changes routing cost. Defaults to on (cheapest).
+  const [laya, setLaya] = useState(true);
+  const [loaded, setLoaded] = useState<Record<string, unknown>>({});
+  useEffect(() => {
+    api
+      .settings()
+      .then((r) => {
+        setLoaded(r.settings ?? {});
+        if (typeof r.settings?.["layaDecision"] === "boolean") {
+          setLaya(r.settings["layaDecision"] as boolean);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveChat = () =>
+    api.saveSettings({
+      ...loaded,
+      layaDecision: laya,
+      defaultMode,
+      defaultModel: model,
+      effort,
+      temperature,
+      ...flags,
+    });
+
   return (
     <>
       <SettingsSection title="Defaults">
@@ -446,7 +475,19 @@ function ChatPrefs() {
           <Toggle label="Collapse large pastes" {...flag("collapsePastes")} />
         </SettingRow>
       </SettingsSection>
-      <SaveBar />
+      <SettingsSection title="Cost & performance">
+        <SettingRow
+          label="Laya fast decision (System 1)"
+          description={
+            laya
+              ? "On — a zero-token heuristic routes each query. Cheapest and fastest; no model call to pick intent."
+              : "Off — a small model classifies intent (System 2). Sharper routing on ambiguous queries, small extra cost per question."
+          }
+        >
+          <Toggle label="Laya fast decision" checked={laya} onChange={setLaya} />
+        </SettingRow>
+      </SettingsSection>
+      <SaveBar onSave={saveChat} />
     </>
   );
 }
@@ -806,14 +847,30 @@ function Danger() {
   );
 }
 
-function SaveBar() {
+function SaveBar({ onSave }: { onSave?: () => void | Promise<unknown> }) {
+  const [saving, setSaving] = useState(false);
   return (
     <div className="flex justify-end">
       <button
-        onClick={() => toast("Settings saved")}
-        className="rounded-xl bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground"
+        disabled={saving}
+        onClick={async () => {
+          if (!onSave) {
+            toast("Settings saved");
+            return;
+          }
+          setSaving(true);
+          try {
+            await onSave();
+            toast("Settings saved");
+          } catch {
+            toast.error("Couldn't save settings");
+          } finally {
+            setSaving(false);
+          }
+        }}
+        className="rounded-xl bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
       >
-        Save changes
+        {saving ? "Saving…" : "Save changes"}
       </button>
     </div>
   );

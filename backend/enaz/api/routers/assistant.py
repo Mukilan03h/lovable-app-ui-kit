@@ -41,9 +41,19 @@ async def ask(
 ) -> StreamingResponse:
     principals = principal.principals
     ak = acl_key(principals)
+    # Resolve the Laya System-1 toggle: per-user setting wins, else workspace default.
+    async with svc.db.acquire(principal.tenant_id) as conn:
+        row = await conn.fetchrow("SELECT settings FROM user_settings WHERE user_id = $1", principal.user.id)
+    system1: bool | None = None
+    if row and row["settings"]:
+        raw = row["settings"]
+        prefs = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(prefs, dict) and "layaDecision" in prefs:
+            system1 = bool(prefs["layaDecision"])
     events = svc.answers.answer(
         principal.tenant_id, principals, ak, body.query,
-        mode=body.mode, sources=body.sources, user_id=principal.user.id, wants_artifact=body.artifact,
+        mode=body.mode, sources=body.sources, user_id=principal.user.id,
+        wants_artifact=body.artifact, system1=system1,
     )
     return StreamingResponse(
         _sse(events),
@@ -53,13 +63,17 @@ async def ask(
 
 
 @router.get("/conversations")
-async def conversations(principal: Principal = Depends(require("assistant")), svc: Services = Depends(get_services)) -> list[dict]:
+async def conversations(principal: Principal = Depends(require("assistant")), svc: Services = Depends(get_services)) -> dict:
     async with svc.db.acquire(principal.tenant_id) as conn:
         rows = await conn.fetch(
             "SELECT id, title, extract(epoch FROM updated_at) AS updated_at FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 50",
             principal.user.id,
         )
-    return [{"id": str(r["id"]), "title": r["title"], "updatedAt": r["updated_at"]} for r in rows]
+    return {
+        "conversations": [
+            {"id": str(r["id"]), "title": r["title"], "updatedAt": r["updated_at"]} for r in rows
+        ]
+    }
 
 
 class FeedbackRequest(BaseModel):

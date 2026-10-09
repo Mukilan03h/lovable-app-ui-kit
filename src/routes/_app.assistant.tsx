@@ -40,15 +40,11 @@ import {
 import { useTheme } from "@/lib/theme";
 import dunes from "@/assets/auth-dunes.jpg";
 import { Guard } from "@/components/app/Guard";
-import { ArtifactCanvas } from "@/components/app/ArtifactCanvas";
 import { artifactMeta } from "@/components/app/artifact-meta";
 import { Pill } from "@/components/app/ui-bits";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import {
-  conversations,
-  demoAnswer,
-  docById,
   agents,
   modelProviders,
   sourceLabel,
@@ -58,7 +54,7 @@ import {
   type SourceApp,
   type Step,
 } from "@/data/knowledge";
-import { apiEnabled, apiStream, downloadUrl } from "@/lib/api";
+import { api, apiStream, downloadUrl, type ConversationSummary } from "@/lib/api";
 
 export const Route = createFileRoute("/_app/assistant")({
   validateSearch: (search: Record<string, unknown>): { artifact?: ArtifactKind } => {
@@ -153,13 +149,12 @@ function AssistantPage() {
   const [scope, setScope] = useState<SourceApp[]>([]);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
-  const { artifact: linkedArtifact } = Route.useSearch();
   const { chatBackground } = useTheme();
-  const [artifact, setArtifact] = useState<ArtifactKind | null>(linkedArtifact ?? null);
   const [agent, setAgent] = useState("Enaz Assistant");
   const [model, setModel] = useState("Claude Sonnet 5.5");
   const [effort, setEffort] = useState<(typeof efforts)[number]>("Medium");
   const [web, setWeb] = useState(false);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
 
   const send = (text: string, kind?: ArtifactKind) => {
@@ -173,8 +168,8 @@ function AssistantPage() {
   };
 
   useEffect(() => {
-    if (linkedArtifact) setArtifact(linkedArtifact);
-  }, [linkedArtifact]);
+    api.conversations().then((r) => setConversations(r.conversations)).catch(() => {});
+  }, []);
 
   const contextUsed = Math.min(92, 6 + turns.length * 14);
 
@@ -186,20 +181,10 @@ function AssistantPage() {
     setScope((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
 
   return (
-    <div
-      className={cn(
-        "grid gap-4 lg:h-[calc(100vh-7.5rem)]",
-        artifact
-          ? "lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_minmax(0,1.05fr)]"
-          : "lg:grid-cols-[220px_minmax(0,1fr)]",
-      )}
-    >
+    <div className="grid gap-4 lg:h-[calc(100vh-7.5rem)] lg:grid-cols-[220px_minmax(0,1fr)]">
       <aside className="hidden min-h-0 flex-col gap-3 lg:flex">
         <button
-          onClick={() => {
-            setTurns([]);
-            setArtifact(null);
-          }}
+          onClick={() => setTurns([])}
           className="flex items-center justify-center gap-2 rounded-2xl bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground"
         >
           <MessageSquarePlus className="size-4" /> New chat
@@ -226,25 +211,24 @@ function AssistantPage() {
             </button>
           ))}
           <div className="my-2 border-t border-border" />
-          {["Today", "Yesterday", "Mon", "Last week"].map((group) => {
-            const items = conversations.filter((c) => c.when === group);
-            if (!items.length) return null;
-            return (
-              <div key={group} className="mb-2">
-                <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  {group}
-                </p>
-                {items.map((c) => (
-                  <button
-                    key={c.id}
-                    className="w-full truncate rounded-xl px-2 py-1.5 text-left text-sm hover:bg-muted"
-                  >
-                    {c.title}
-                  </button>
-                ))}
-              </div>
-            );
-          })}
+          {conversations.length > 0 && (
+            <div className="mb-2">
+              <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Recent
+              </p>
+              {conversations.map((c) => (
+                <button
+                  key={c.id}
+                  className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-sm hover:bg-muted"
+                >
+                  <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">
+                    {relTime(c.updatedAt)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="rounded-3xl border border-border bg-card p-3 text-xs text-muted-foreground">
           <p className="flex items-center gap-1.5 font-medium text-foreground">
@@ -338,7 +322,7 @@ function AssistantPage() {
           ) : (
             <div className="mx-auto max-w-3xl space-y-8">
               {turns.map((t) => (
-                <AnswerTurn key={t.id} turn={t} onArtifact={(k) => setArtifact(k)} />
+                <AnswerTurn key={t.id} turn={t} onGenerate={(k) => send(t.question, k)} />
               ))}
               <div ref={endRef} />
             </div>
@@ -451,14 +435,6 @@ function AssistantPage() {
           </div>
         </div>
       </section>
-
-      <AnimatePresence>
-        {artifact && (
-          <div className="min-h-0 lg:col-span-2 xl:col-span-1">
-            <ArtifactCanvas key={artifact} kind={artifact} onClose={() => setArtifact(null)} />
-          </div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }
@@ -621,7 +597,6 @@ function useTurn(turn: Turn): TurnState {
   const [state, setState] = useState<TurnState>(EMPTY);
 
   useEffect(() => {
-    if (!apiEnabled) return;
     const ctrl = new AbortController();
     apiStream(
       "/api/assistant/ask",
@@ -638,63 +613,14 @@ function useTurn(turn: Turn): TurnState {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (apiEnabled) return;
-    const steps = demoAnswer.steps.filter((s) => s.tool !== "artifact" || turn.artifact);
-    const cited = Array.from(new Set(demoAnswer.paragraphs.flatMap((p) => p.cites)));
-    const sources: SourceCard[] = cited.flatMap((id, i) => {
-      const d = docById(id);
-      return d
-        ? [{ n: i + 1, title: d.title, source: d.source, snippet: d.snippet, updated: d.updated }]
-        : [];
-    });
-    const paragraphs = demoAnswer.paragraphs.map((p) => ({
-      text: p.text,
-      cites: p.cites.map((id) => cited.indexOf(id) + 1),
-    }));
-    const seq: (() => void)[] = [];
-    steps.forEach((s) =>
-      seq.push(() =>
-        setState((prev) => ({
-          ...prev,
-          steps: [...prev.steps, { tool: s.tool, label: s.label, detail: s.detail }],
-        })),
-      ),
-    );
-    paragraphs.forEach((p) =>
-      seq.push(() => setState((prev) => ({ ...prev, paragraphs: [...prev.paragraphs, p] }))),
-    );
-    seq.push(() =>
-      setState((prev) => ({
-        ...prev,
-        sources,
-        verification: { supported: cited.length, total: cited.length },
-        done: true,
-        summary: `Worked through ${steps.length} steps · 3.4s · $0.006`,
-        ...(turn.artifact ? { artifactKind: turn.artifact } : {}),
-      })),
-    );
-    const timers = seq.map((fn, i) => window.setTimeout(fn, 350 * (i + 1)));
-    return () => timers.forEach((t) => window.clearTimeout(t));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   return state;
 }
 
-function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: ArtifactKind) => void }) {
+function AnswerTurn({ turn, onGenerate }: { turn: Turn; onGenerate: (k: ArtifactKind) => void }) {
   const state = useTurn(turn);
   const [focused, setFocused] = useState<number | null>(null);
-  const openedRef = useRef(false);
   const done = state.done;
   const artifactKind = state.artifactKind ?? turn.artifact;
-
-  useEffect(() => {
-    if (done && !apiEnabled && artifactKind && !openedRef.current) {
-      openedRef.current = true;
-      onArtifact(artifactKind);
-    }
-  }, [done, artifactKind, onArtifact]);
 
   return (
     <div className="space-y-4">
@@ -794,40 +720,36 @@ function AnswerTurn({ turn, onArtifact }: { turn: Turn; onArtifact: (k: Artifact
                 {state.verification.total} claims verified
               </Pill>
             )}
-            {apiEnabled && state.artifactId ? (
-              <>
-                <a
-                  href={downloadUrl(`/api/artifacts/${state.artifactId}/download`)}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground"
-                >
-                  <FileText className="size-3.5" /> Download{" "}
-                  {artifactKind ? artifactMeta[artifactKind].ext : ""}
-                </a>
-                {artifactKind && (
-                  <button
-                    onClick={() => onArtifact(artifactKind)}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted"
-                  >
-                    Open preview
-                  </button>
-                )}
-              </>
-            ) : (
-              (Object.keys(artifactMeta) as ArtifactKind[]).map((k) => {
+            {state.artifactId && artifactKind && (
+              <a
+                href={downloadUrl(`/api/artifacts/${state.artifactId}/download`)}
+                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground"
+              >
+                <FileText className="size-3.5" /> Download {artifactMeta[artifactKind].ext}
+              </a>
+            )}
+            {(Object.keys(artifactMeta) as ArtifactKind[])
+              .filter((k) => k !== artifactKind)
+              .map((k) => {
                 const M = artifactMeta[k];
                 return (
                   <button
                     key={k}
-                    onClick={() => onArtifact(k)}
+                    onClick={() => onGenerate(k)}
                     className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted"
                   >
-                    <M.icon className="size-3.5" /> {artifactKind === k ? "Open" : "Turn into"}{" "}
-                    {M.label.toLowerCase()}
+                    <M.icon className="size-3.5" /> Turn into {M.label.toLowerCase()}
                   </button>
                 );
-              })
-            )}
-            <button className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted">
+              })}
+            <button
+              onClick={() => {
+                const text = state.paragraphs.map((p) => p.text).join("\n\n");
+                navigator.clipboard?.writeText(text);
+                toast("Copied answer with citations");
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium hover:bg-muted"
+            >
               <FileText className="size-3.5" /> Copy with citations
             </button>
           </div>

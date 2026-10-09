@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     model_deep: str = "claude-opus-5-5"
     llm_offline: bool | None = None  # None = auto-detect from credentials
 
+    # Laya "System 1" fast-decision default. When true, intent routing uses a
+    # zero-token heuristic instead of a small-model classify call. Users can
+    # override per-account in Settings; this is the workspace fallback.
+    laya_system1_default: bool = True
+
     # ---- retrieval providers ----------------------------------------------
     embedding_provider: str = "hashing"  # "hashing" (offline) | "voyage"
     embedding_dim: int = 512

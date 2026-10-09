@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Activity,
@@ -50,8 +50,18 @@ import { Slider } from "@/components/ui/slider";
 import { PageTransition } from "@/lib/motion";
 import { accents } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { members } from "@/data/mock";
-import { connectors, modelProviders, sourceLabel, sourceLogo } from "@/data/knowledge";
+import { api } from "@/lib/api";
+import type {
+  AdminOverview,
+  AdminUser,
+  AuditRow,
+  ConnectorRow,
+  EvalMetrics,
+  GroupRow,
+  SsoRow,
+  VerifiedRow,
+} from "@/lib/api";
+import { sourceLabel, sourceLogo, type SourceApp } from "@/data/knowledge";
 
 export const Route = createFileRoute("/_app/admin")({
   head: () => ({
@@ -282,38 +292,116 @@ function useFlags<T extends Record<string, boolean>>(initial: T) {
   );
 }
 
+/** Epoch seconds → short relative time. */
+function relTime(epoch: number | null | undefined): string {
+  if (!epoch) return "never";
+  const s = Math.round((Date.now() - epoch * 1000) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d}d ago`;
+  const w = Math.round(d / 7);
+  if (w < 5) return `${w}w ago`;
+  const mo = Math.round(d / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.round(d / 365)}y ago`;
+}
+
+/** Initials from a name or email. */
+function initials(who: string): string {
+  const base = who.includes("@") ? (who.split("@")[0] ?? who) : who;
+  const parts = base.split(/[\s._-]+/).filter(Boolean);
+  const chars = (parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "");
+  return (chars || base.slice(0, 2)).toUpperCase();
+}
+
+/** Metric values may arrive as a 0–1 fraction or a 0–100 percentage. */
+function pct(x: number): number {
+  return Math.round(x <= 1 ? x * 100 : x);
+}
+
+/** Small data-loader hook: loads once, exposes loading/error and a reload. */
+function useFetch<T>(loader: () => Promise<T>) {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const reload = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    loader()
+      .then(setData)
+      .catch(() => setError("Couldn't reach the backend. Please try again."))
+      .finally(() => setLoading(false));
+    // loader only closes over the stable `api` client
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(reload, [reload]);
+  return { data, loading, error, reload, setData };
+}
+
+function PanelLoading() {
+  return (
+    <div className="space-y-2 py-2">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div key={i} className="h-14 animate-pulse rounded-2xl border border-border bg-muted/40" />
+      ))}
+    </div>
+  );
+}
+
+function PanelError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="rounded-2xl border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+      {message}{" "}
+      <button onClick={onRetry} className="font-semibold underline">
+        Retry
+      </button>
+    </div>
+  );
+}
+
+function PanelEmpty({ message }: { message: string }) {
+  return <div className="py-6 text-center text-sm text-muted-foreground">{message}</div>;
+}
+
 function ModelsPanel() {
+  const { data, loading, error, reload } = useFetch<AdminOverview>(() => api.adminOverview());
+  const entries = data ? Object.entries(data.llm.models) : [];
   return (
     <SettingsSection
-      title="Providers"
-      description="Bring your own keys, or run models inside your VPC or air-gapped."
+      title="Active models"
+      description="Models resolved by the router for each task."
       action={
-        <Btn primary onClick={() => toast("Add provider")}>
-          <Plus className="size-3.5" /> Add provider
-        </Btn>
+        data?.llm.offline ? (
+          <Pill tone="info">Offline · air-gapped</Pill>
+        ) : (
+          <Pill tone="success">Online</Pill>
+        )
       }
     >
-      {modelProviders.map((p) => (
-        <div key={p.name} className="flex flex-wrap items-center gap-3 py-3">
-          <BrandLogo id={p.logo} />
-          <div className="min-w-0 flex-1">
-            <p className="flex items-center gap-2 text-sm font-semibold">
-              {p.name}
-              {p.status === "connected" && <Pill tone="success">Connected</Pill>}
-            </p>
-            <p className="truncate text-xs text-muted-foreground">
-              {p.models.join(" · ")} — {p.role}
-            </p>
+      {loading ? (
+        <PanelLoading />
+      ) : error ? (
+        <PanelError message={error} onRetry={reload} />
+      ) : entries.length === 0 ? (
+        <PanelEmpty message="No models configured." />
+      ) : (
+        entries.map(([role, model]) => (
+          <div key={role} className="flex flex-wrap items-center gap-3 py-3">
+            <span className="grid size-9 place-items-center rounded-xl bg-brand/12 text-brand">
+              <Cpu className="size-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold capitalize">{role}</p>
+              <p className="truncate text-xs text-muted-foreground">{model}</p>
+            </div>
+            <Btn onClick={() => toast(`Configure ${role}`)}>Configure</Btn>
           </div>
-          <Btn
-            onClick={() =>
-              toast(p.status === "connected" ? `Configure ${p.name}` : `Connect ${p.name}`)
-            }
-          >
-            {p.status === "connected" ? "Configure" : "Connect"}
-          </Btn>
-        </div>
-      ))}
+        ))
+      )}
     </SettingsSection>
   );
 }
@@ -522,28 +610,38 @@ function IndexPanel() {
 }
 
 function IndexingPanel() {
+  const { data, loading, error, reload } = useFetch(() => api.connectors());
+  const rows: ConnectorRow[] = (data?.connected ?? []).filter((c) => c.status !== "available");
   return (
     <SettingsSection title="Sources">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] text-sm">
-          <thead>
-            <tr className="text-left text-xs text-muted-foreground">
-              <th className="py-2 font-medium">Source</th>
-              <th className="py-2 font-medium">Docs</th>
-              <th className="py-2 font-medium">Last run</th>
-              <th className="py-2 font-medium">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {connectors
-              .filter((c) => c.status !== "available")
-              .map((c) => (
+      {loading ? (
+        <PanelLoading />
+      ) : error ? (
+        <PanelError message={error} onRetry={reload} />
+      ) : rows.length === 0 ? (
+        <PanelEmpty message="No connected sources yet." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-sm">
+            <thead>
+              <tr className="text-left text-xs text-muted-foreground">
+                <th className="py-2 font-medium">Source</th>
+                <th className="py-2 font-medium">Docs</th>
+                <th className="py-2 font-medium">Last run</th>
+                <th className="py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c) => (
                 <tr key={c.id} className="border-t border-border">
                   <td className="flex items-center gap-2 py-2.5">
-                    <BrandLogo id={sourceLogo[c.source]} size="xs" /> {sourceLabel[c.source]}
+                    <BrandLogo id={sourceLogo[c.type as SourceApp] ?? c.type} size="xs" />{" "}
+                    {sourceLabel[c.type as SourceApp] ?? c.name}
                   </td>
                   <td className="py-2.5 tabular-nums">{c.docs.toLocaleString()}</td>
-                  <td className="py-2.5 text-muted-foreground">{c.lastSync}</td>
+                  <td className="py-2.5 text-muted-foreground">
+                    {c.status === "syncing" ? "syncing…" : relTime(c.lastSync)}
+                  </td>
                   <td className="py-2.5">
                     <Pill
                       tone={
@@ -560,50 +658,46 @@ function IndexingPanel() {
                   </td>
                 </tr>
               ))}
-          </tbody>
-        </table>
-      </div>
+            </tbody>
+          </table>
+        </div>
+      )}
     </SettingsSection>
   );
 }
 
 function StandardPanel() {
-  const items = [
-    {
-      q: "What is our PTO policy?",
-      a: "Unlimited PTO with a 15-day minimum; see HR handbook §4.",
-      cat: "HR",
-    },
-    {
-      q: "How do I get VPN access?",
-      a: "Request via IT portal → Network → VPN; approval within 1 day.",
-      cat: "IT",
-    },
-    {
-      q: "Which regions do we host in?",
-      a: "US-East, EU-Frankfurt and India-Mumbai.",
-      cat: "Security",
-    },
-  ];
+  const { data, loading, error, reload } = useFetch<{ answers: VerifiedRow[] }>(() =>
+    api.adminVerified(),
+  );
+  const items = data?.answers ?? [];
   return (
     <SettingsSection
       title="Verified answers"
       description="Curated answers shown first, with an owner and a review date."
       action={
-        <Btn primary>
+        <Btn primary onClick={() => toast("New verified answer")}>
           <Plus className="size-3.5" /> New answer
         </Btn>
       }
     >
-      {items.map((i) => (
-        <div key={i.q} className="py-3">
-          <div className="flex items-center gap-2">
-            <p className="flex-1 text-sm font-medium">{i.q}</p>
-            <Pill>{i.cat}</Pill>
+      {loading ? (
+        <PanelLoading />
+      ) : error ? (
+        <PanelError message={error} onRetry={reload} />
+      ) : items.length === 0 ? (
+        <PanelEmpty message="No verified answers yet." />
+      ) : (
+        items.map((i) => (
+          <div key={i.id} className="py-3">
+            <div className="flex items-center gap-2">
+              <p className="flex-1 text-sm font-medium">{i.question}</p>
+              <Pill>{i.category}</Pill>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{i.answer}</p>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">{i.a}</p>
-        </div>
-      ))}
+        ))
+      )}
     </SettingsSection>
   );
 }
@@ -683,49 +777,100 @@ function BotsPanel() {
 }
 
 function UsersPanel() {
+  const { data, loading, error, reload, setData } = useFetch<{ users: AdminUser[] }>(() =>
+    api.adminUsers(),
+  );
+  const users = data?.users ?? [];
+
+  async function patch(u: AdminUser, body: { role?: string; disabled?: boolean }) {
+    try {
+      await api.updateUser(u.id, body);
+      setData((prev) =>
+        prev
+          ? { users: prev.users.map((x) => (x.id === u.id ? { ...x, ...body } : x)) }
+          : prev,
+      );
+      toast(`Updated ${u.name}`);
+    } catch {
+      toast.error(`Couldn't update ${u.name}`);
+      reload();
+    }
+  }
+
   return (
     <SettingsSection
-      title={`${members.length} users`}
+      title={loading ? "Users" : `${users.length} users`}
       action={
-        <Btn primary>
+        <Btn primary onClick={() => toast("Invite teammate")}>
           <Plus className="size-3.5" /> Invite
         </Btn>
       }
     >
-      {members.map((m) => (
-        <div key={m.id} className="flex flex-wrap items-center gap-3 py-3">
-          <Avatar initials={m.avatar} />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">{m.name}</p>
-            <p className="truncate text-xs text-muted-foreground">{m.email}</p>
+      {loading ? (
+        <PanelLoading />
+      ) : error ? (
+        <PanelError message={error} onRetry={reload} />
+      ) : users.length === 0 ? (
+        <PanelEmpty message="No users found." />
+      ) : (
+        users.map((m) => (
+          <div key={m.id} className="flex flex-wrap items-center gap-3 py-3">
+            <Avatar initials={m.avatar || initials(m.name || m.email)} />
+            <div className="min-w-0 flex-1">
+              <p className="flex items-center gap-2 text-sm font-medium">
+                {m.name}
+                {m.disabled && <Pill tone="danger">Disabled</Pill>}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">{m.email}</p>
+            </div>
+            <SelectField
+              value={m.role}
+              onChange={(role) => void patch(m, { role })}
+              options={[
+                { value: "admin", label: "Admin" },
+                { value: "manager", label: "Curator" },
+                { value: "member", label: "Member" },
+                { value: "client", label: "Guest" },
+              ]}
+            />
+            <Toggle
+              label={`Enable ${m.name}`}
+              checked={!m.disabled}
+              onChange={(v) => void patch(m, { disabled: !v })}
+            />
           </div>
-          <SelectField
-            value={m.role}
-            onChange={() => toast(`Role updated for ${m.name}`)}
-            options={[
-              { value: "admin", label: "Admin" },
-              { value: "manager", label: "Curator" },
-              { value: "member", label: "Member" },
-              { value: "client", label: "Guest" },
-            ]}
-          />
-        </div>
-      ))}
+        ))
+      )}
     </SettingsSection>
   );
 }
 
 function SsoPanel() {
+  const { data, loading, error, reload } = useFetch<{ providers: SsoRow[] }>(() => api.adminSso());
+  const providers = data?.providers ?? [];
   return (
     <>
       <SettingsSection title="Single sign-on">
-        <ProviderList
-          items={[
-            { logo: "okta", name: "Okta (SAML)", note: "Enforced for @enaz.com", on: true },
-            { logo: "azure", name: "Microsoft Entra ID (OIDC)", note: "Not configured" },
-            { logo: "auth0", name: "Auth0 (OIDC)", note: "Not configured" },
-          ]}
-        />
+        {loading ? (
+          <PanelLoading />
+        ) : error ? (
+          <PanelError message={error} onRetry={reload} />
+        ) : providers.length === 0 ? (
+          <PanelEmpty message="No identity providers configured." />
+        ) : (
+          providers.map((p) => (
+            <div key={p.id} className="flex items-center gap-3 py-3">
+              <BrandLogo id={p.type} size="sm" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">{p.name}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {p.issuer ?? "Not configured"}
+                </p>
+              </div>
+              {p.enabled ? <Pill tone="success">Enabled</Pill> : <Pill>Off</Pill>}
+            </div>
+          ))
+        )}
       </SettingsSection>
       <SettingsSection
         title="SCIM provisioning"
@@ -872,15 +1017,38 @@ function SecurityPanel() {
 }
 
 function BillingPanel() {
+  const { data, loading, error, reload } = useFetch<AdminOverview>(() => api.adminOverview());
+  if (loading)
+    return (
+      <SettingsSection title="Plan & billing">
+        <PanelLoading />
+      </SettingsSection>
+    );
+  if (error)
+    return (
+      <SettingsSection title="Plan & billing">
+        <PanelError message={error} onRetry={reload} />
+      </SettingsSection>
+    );
   return (
-    <SettingsSection title="Business plan" description="$24 per user / month · billed yearly">
+    <SettingsSection
+      title={data ? `${data.plan} plan` : "Plan & billing"}
+      description="$24 per user / month · billed yearly"
+    >
       <SettingRow label="Seats">
-        <span className="text-sm tabular-nums">412 of 500 used</span>
+        <span className="text-sm tabular-nums">{data?.users ?? 0} users</span>
       </SettingRow>
-      <SettingRow label="AI usage this month">
-        <div className="flex w-56 items-center gap-2 text-xs text-muted-foreground">
-          <Bar value={46} /> $1,140 / $2,500
-        </div>
+      <SettingRow label="Groups">
+        <span className="text-sm tabular-nums">{data?.groups ?? 0}</span>
+      </SettingRow>
+      <SettingRow label="Knowledge indexed">
+        <span className="text-sm tabular-nums">
+          {(data?.documents ?? 0).toLocaleString()} docs · {(data?.chunks ?? 0).toLocaleString()}{" "}
+          chunks
+        </span>
+      </SettingRow>
+      <SettingRow label="Connectors">
+        <span className="text-sm tabular-nums">{data?.connectors ?? 0} connected</span>
       </SettingRow>
       <SettingRow label="Self-hosting">
         <Pill tone="success">Included · permission sync free</Pill>
@@ -890,74 +1058,130 @@ function BillingPanel() {
 }
 
 function HistoryPanel() {
-  const rows = [
-    { who: "AV", q: "Build a GA readiness deck", when: "10:42", rating: "up" },
-    { who: "NP", q: "Globex renewal risks", when: "10:31", rating: "none" },
-    { who: "LR", q: "Nested AD group sync error", when: "09:58", rating: "down" },
-    { who: "MC", q: "Contextual retrieval eval results", when: "09:20", rating: "up" },
-  ];
+  const { data, loading, error, reload } = useFetch<{ log: AuditRow[] }>(() => api.auditLog());
+  const rows = data?.log ?? [];
   return (
     <SettingsSection
-      title="Recent queries"
+      title="Recent activity"
       description="Visible to admins only; retention follows Security settings."
     >
-      {rows.map((r) => (
-        <div key={r.q} className="flex items-center gap-3 py-3">
-          <Avatar initials={r.who} className="size-7" />
-          <p className="min-w-0 flex-1 truncate text-sm">{r.q}</p>
-          {r.rating === "up" && <Pill tone="success">Helpful</Pill>}
-          {r.rating === "down" && <Pill tone="danger">Unhelpful</Pill>}
-          <span className="text-xs text-muted-foreground">{r.when}</span>
-        </div>
-      ))}
+      {loading ? (
+        <PanelLoading />
+      ) : error ? (
+        <PanelError message={error} onRetry={reload} />
+      ) : rows.length === 0 ? (
+        <PanelEmpty message="No activity recorded yet." />
+      ) : (
+        rows.map((r, i) => (
+          <div key={`${r.action}-${r.createdAt}-${i}`} className="flex items-center gap-3 py-3">
+            <Avatar initials={initials(r.user)} className="size-7" />
+            <p className="min-w-0 flex-1 truncate text-sm">
+              <span className="font-medium">{r.user}</span>{" "}
+              <span className="text-muted-foreground">{r.action}</span> {r.target}
+            </p>
+            <span className="text-xs text-muted-foreground">{relTime(r.createdAt)}</span>
+          </div>
+        ))
+      )}
     </SettingsSection>
   );
 }
 
 function EvalsPanel() {
-  const runs = [
-    {
-      name: "Golden set v7 · 420 questions",
-      acc: 86,
-      cite: 94,
-      when: "today",
-      tone: "success" as const,
-    },
-    {
-      name: "Golden set v7 · reranker off",
-      acc: 74,
-      cite: 88,
-      when: "today",
-      tone: "warning" as const,
-    },
-    { name: "Golden set v6", acc: 82, cite: 92, when: "last week", tone: "success" as const },
-  ];
+  const { data, loading, error, reload, setData } = useFetch<{ runs: EvalMetrics[] }>(() =>
+    api.evalHistory(),
+  );
+  const [running, setRunning] = useState(false);
+  const runs = data?.runs ?? [];
+
+  async function run() {
+    setRunning(true);
+    try {
+      const result = await api.runEval();
+      setData((prev) => ({ runs: [result, ...(prev?.runs ?? [])] }));
+      toast("Evaluation complete", {
+        description: `${pct(result.recallAt10)}% recall@10 · ${pct(result.citationRate)}% cited`,
+      });
+    } catch {
+      toast.error("Evaluation failed to run");
+      reload();
+    } finally {
+      setRunning(false);
+    }
+  }
+
   return (
     <SettingsSection
       title="Quality gate"
       description="No model, prompt or ranking change ships if the golden set regresses."
       action={
-        <Btn primary onClick={() => toast("Evaluation run started")}>
-          Run evaluation
+        <Btn primary onClick={run}>
+          {running ? "Running…" : "Run evaluation"}
         </Btn>
       }
     >
-      {runs.map((r) => (
-        <div
-          key={r.name}
-          className="grid gap-2 py-3 sm:grid-cols-[1fr_160px_160px] sm:items-center"
-        >
-          <p className="text-sm font-medium">
-            {r.name} <span className="text-xs text-muted-foreground">· {r.when}</span>
-          </p>
-          <div className="flex items-center gap-2 text-xs">
-            <Bar value={r.acc} tone={r.tone} /> {r.acc}% correct
+      {loading ? (
+        <PanelLoading />
+      ) : error ? (
+        <PanelError message={error} onRetry={reload} />
+      ) : runs.length === 0 ? (
+        <PanelEmpty message="No evaluation runs yet — run one to start the history." />
+      ) : (
+        runs.map((r, i) => {
+          const recall = pct(r.recallAt10);
+          return (
+            <div
+              key={`${r.name}-${r.createdAt ?? i}`}
+              className="grid gap-2 py-3 sm:grid-cols-[1fr_160px_160px] sm:items-center"
+            >
+              <p className="text-sm font-medium">
+                {r.name} · {r.questions} questions{" "}
+                {r.createdAt && (
+                  <span className="text-xs text-muted-foreground">· {relTime(r.createdAt)}</span>
+                )}
+              </p>
+              <div className="flex items-center gap-2 text-xs">
+                <Bar value={recall} tone={recall >= 80 ? "success" : "warning"} /> {recall}% recall
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <Bar value={pct(r.citationRate)} /> {pct(r.citationRate)}% cited
+              </div>
+            </div>
+          );
+        })
+      )}
+    </SettingsSection>
+  );
+}
+
+function GroupsPanel() {
+  const { data, loading, error, reload } = useFetch<{ groups: GroupRow[] }>(() =>
+    api.adminGroups(),
+  );
+  const groups = data?.groups ?? [];
+  return (
+    <SettingsSection title={loading ? "Groups" : `${groups.length} groups`}>
+      {loading ? (
+        <PanelLoading />
+      ) : error ? (
+        <PanelError message={error} onRetry={reload} />
+      ) : groups.length === 0 ? (
+        <PanelEmpty message="No groups yet." />
+      ) : (
+        groups.map((g) => (
+          <div key={g.id} className="flex items-center gap-3 py-3">
+            <span className="grid size-9 place-items-center rounded-xl bg-brand/12 text-brand">
+              <UserCog className="size-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">{g.name}</p>
+              <p className="truncate text-xs text-muted-foreground">
+                {g.members.toLocaleString()} members · synced from {g.source}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-xs">
-            <Bar value={r.cite} /> {r.cite}% cited
-          </div>
-        </div>
-      ))}
+        ))
+      )}
     </SettingsSection>
   );
 }
@@ -1095,16 +1319,7 @@ const panels: Record<string, () => ReactNode> = {
     />
   ),
   users: () => <UsersPanel />,
-  groups: () => (
-    <SimpleToggles
-      title="Groups"
-      rows={[
-        ["Engineering", "86 members · synced from Okta"],
-        ["Sales", "54 members"],
-        ["Leadership", "9 members"],
-      ]}
-    />
-  ),
+  groups: () => <GroupsPanel />,
   sso: () => <SsoPanel />,
   branding: () => <BrandingPanel />,
   security: () => <SecurityPanel />,

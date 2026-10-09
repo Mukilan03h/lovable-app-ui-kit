@@ -49,6 +49,28 @@ def test_router_picks_cheaper_path_for_lookups():
     assert r.path == "quick" and r.effort == "low"
 
 
+async def test_laya_system1_skips_model_and_spends_no_tokens():
+    """With Laya on, classify() never calls the LLM and reports zero router cost."""
+
+    class _BoomGateway(LLMGateway):
+        async def complete(self, *args, **kwargs):  # type: ignore[override]
+            raise AssertionError("Laya System-1 must not call the model")
+
+    router = DecisionRouter(_BoomGateway(offline=False), Settings())
+    route = await router.classify("compare our pricing across all regions", system1=True)
+    assert route.by == "laya-system1"
+    assert getattr(route, "router_cost", 0.0) == 0.0
+    # Heuristic intent is still correct without any model call.
+    assert route.intent == "research"
+
+
+async def test_laya_default_follows_workspace_setting():
+    """classify() honours the workspace default when system1 is left unset."""
+    router = DecisionRouter(LLMGateway(offline=True), Settings(laya_system1_default=True))
+    route = await router.classify("who owns the GA fix?")
+    assert route.by == "laya-system1" and route.intent == "lookup"
+
+
 def test_verifier_flags_unsupported_claims():
     emb = HashingEmbedder(256)
     ledger = Ledger.from_hits([
