@@ -1,0 +1,700 @@
+"""End-to-end API tests: auth, RBAC, ACL, streaming answers, artifacts, admin, SCIM."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from .conftest import auth, token_for
+
+
+async def read_sse(client, url, headers, body):
+    events = []
+    async with client.stream("POST", url, headers=headers, json=body) as resp:
+        assert resp.status_code == 200
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    return events
+
+
+async def test_health(client):
+    resp = await client.get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+    assert resp.json()["llm"] == "offline"
+
+
+async def test_login_and_me(client, services):
+    token = await token_for(client, services, "admin")
+    resp = await client.get("/api/auth/me", headers=auth(token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["user"]["role"] == "admin"
+    assert "public" in data["principals"]
+
+
+async def test_password_login(client, services):
+    resp = await client.post("/api/auth/login", json={"email": "admin@test.com", "password": "pw", "tenant": services._test_slug})
+    assert resp.status_code == 200
+    assert resp.json()["user"]["email"] == "admin@test.com"
+    bad = await client.post("/api/auth/login", json={"email": "admin@test.com", "password": "wrong", "tenant": services._test_slug})
+    assert bad.status_code == 401
+
+
+async def test_rbac_blocks_member_from_admin(client, services):
+    token = await token_for(client, services, "member")
+    resp = await client.get("/api/admin/overview", headers=auth(token))
+    assert resp.status_code == 403
+
+
+async def test_search_and_acl(client, services):
+    admin = await token_for(client, services, "admin")
+    member = await token_for(client, services, "member")
+    client_tok = await token_for(client, services, "client")
+
+    r = await client.get("/api/search", params={"q": "GA launch blocker"}, headers=auth(admin))
+    assert r.status_code == 200
+    assert any(h["title"] == "GA readiness" for h in r.json()["results"])
+
+    # Member (engineering) sees eng doc; not leadership-only comp doc.
+    r = await client.get("/api/search", params={"q": "executive compensation equity"}, headers=auth(member))
+    titles = [h["title"] for h in r.json()["results"]]
+    assert "Executive compensation" not in titles
+
+    # Admin (leadership) does see it.
+    r = await client.get("/api/search", params={"q": "executive compensation equity"}, headers=auth(admin))
+    assert "Executive compensation" in [h["title"] for h in r.json()["results"]]
+
+    # Guest sees neither public-internal nor restricted docs.
+    r = await client.get("/api/search", params={"q": "retrieval architecture reranker"}, headers=auth(client_tok))
+    assert "Retrieval architecture" not in [h["title"] for h in r.json()["results"]]
+
+
+async def test_assistant_quick_answer(client, services):
+    token = await token_for(client, services, "admin")
+    events = await read_sse(client, "/api/assistant/ask", auth(token),
+                            {"query": "What is blocking the GA launch?", "mode": "quick"})
+    types = [e["type"] for e in events]
+    assert "route" in types and "answer" in types and "sources" in types and "done" in types
+    answer = next(e for e in events if e["type"] == "answer")
+    assert "[1]" in answer["text"] or answer["paragraphs"][0]["cites"]
+    done = next(e for e in events if e["type"] == "done")
+    assert done["baselineCost"] >= done["cost"]
+
+
+async def test_assistant_research_with_artifact(client, services):
+    token = await token_for(client, services, "admin")
+    events = await read_sse(client, "/api/assistant/ask", auth(token),
+                            {"query": "Build a deck on GA readiness", "mode": "research", "artifact": "slides"})
+    artifact = [e for e in events if e["type"] == "artifact"]
+    assert artifact, "expected an artifact event"
+    aid = artifact[0]["artifactId"]
+
+    dl = await client.get(f"/api/artifacts/{aid}/download", headers=auth(token))
+    assert dl.status_code == 200
+    assert dl.content[:2] == b"PK"  # valid OOXML/zip
+    assert "presentation" in dl.headers["content-type"]
+
+    # Edit by instruction creates a new version.
+    patched = await client.post(f"/api/artifacts/{aid}/patch", headers=auth(token), json={"instruction": "add a risks slide"})
+    assert patched.status_code == 200
+    assert patched.json()["version"] == 2
+
+
+async def test_upload_and_index(client, services):
+    token = await token_for(client, services, "admin")
+    files = {"file": ("note.md", b"# Onboarding\nConnect the identity provider in week one.", "text/markdown")}
+    resp = await client.post("/api/connectors/upload", headers=auth(token), files=files, data={"access": "public"})
+    assert resp.status_code == 200
+    r = await client.get("/api/search", params={"q": "identity provider week one"}, headers=auth(token))
+    assert any("Onboarding" in h["title"] for h in r.json()["results"])
+
+
+async def test_connectors_catalog(client, services):
+    token = await token_for(client, services, "admin")
+    resp = await client.get("/api/connectors/catalog", headers=auth(token))
+    assert resp.status_code == 200
+    cat = resp.json()["connectors"]
+    assert len(cat) >= 40
+    assert any(c["live"] and c["type"] == "github" for c in cat)
+
+
+async def test_settings_memory_and_tokens(client, services):
+    token = await token_for(client, services, "member")
+    m = await client.post("/api/settings/memory", headers=auth(token), json={"text": "Prefers concise answers"})
+    assert m.status_code == 200
+    mem = await client.get("/api/settings/memory", headers=auth(token))
+    assert any(x["text"] == "Prefers concise answers" for x in mem.json()["memories"])
+
+    t = await client.post("/api/settings/tokens", headers=auth(token), json={"name": "CLI", "scopes": ["search"]})
+    raw = t.json()["token"]
+    assert raw.startswith("enaz_")
+    # The raw token authenticates and is scoped.
+    r = await client.get("/api/search", params={"q": "GA launch"}, headers=auth(raw))
+    assert r.status_code == 200
+    # ...but not for an unscoped permission.
+    bad = await client.get("/api/artifacts", headers=auth(raw))
+    assert bad.status_code == 403
+
+
+async def test_mcp_search(client, services):
+    token = await token_for(client, services, "member")
+    t = await client.post("/api/settings/tokens", headers=auth(token), json={"name": "MCP", "scopes": ["search"]})
+    raw = t.json()["token"]
+    resp = await client.post("/api/mcp", headers=auth(raw), json={"method": "tools/list"})
+    assert any(tool["name"] == "search" for tool in resp.json()["tools"])
+    call = await client.post("/api/mcp", headers=auth(raw),
+                             json={"method": "tools/call", "params": {"name": "search", "arguments": {"query": "GA launch"}}})
+    assert call.status_code == 200 and not call.json()["isError"]
+
+
+async def test_admin_eval_and_insights(client, services):
+    token = await token_for(client, services, "admin")
+    ev = await client.post("/api/admin/evals/run", headers=auth(token))
+    assert ev.status_code == 200
+    assert ev.json()["questions"] >= 1
+    assert ev.json()["recallAt10"] >= 50
+
+    # Generate some query traffic, then check insights reflect it.
+    await read_sse(client, "/api/assistant/ask", auth(token), {"query": "bake-off results", "mode": "quick"})
+    ins = await client.get("/api/insights", params={"days": 7}, headers=auth(token))
+    assert ins.json()["stats"]["queries"] >= 1
+
+
+async def test_scim_provisioning(client, services):
+    admin = await token_for(client, services, "admin")
+    t = await client.post("/api/settings/tokens", headers=auth(admin), json={"name": "SCIM", "scopes": ["scim"]})
+    scim_token = t.json()["token"]
+    created = await client.post(
+        "/scim/v2/Users", headers=auth(scim_token),
+        json={"userName": "scim.user@test.com", "name": {"givenName": "Scim", "familyName": "User"}, "active": True},
+    )
+    assert created.status_code == 201
+    uid = created.json()["id"]
+    listed = await client.get("/scim/v2/Users", headers=auth(scim_token))
+    assert any(u["userName"] == "scim.user@test.com" for u in listed.json()["Resources"])
+    # Deactivate via PATCH.
+    patched = await client.patch(f"/scim/v2/Users/{uid}", headers=auth(scim_token),
+                                 json={"Operations": [{"op": "replace", "path": "active", "value": False}]})
+    assert patched.json()["active"] is False
+    # A non-SCIM token is rejected.
+    bad = await client.get("/scim/v2/Users", headers=auth(admin))
+    assert bad.status_code in (401, 403)
+
+
+async def test_agents_list_and_create(client, services):
+    token = await token_for(client, services, "admin")
+    created = await client.post("/api/agents", headers=auth(token),
+                                json={"name": "Test agent", "description": "d", "tools": ["Search"], "output": "answer"})
+    assert created.status_code == 200
+    listed = await client.get("/api/agents", headers=auth(token))
+    assert any(a["name"] == "Test agent" for a in listed.json()["agents"])
+
+
+async def test_agent_stage1_enforcement(client, services):
+    """Stage 1: enabled status, source scope and tool allowlist are enforced server-side."""
+    token = await token_for(client, services, "admin")
+
+    async def make(name, **extra):
+        r = await client.post("/api/agents", headers=auth(token),
+                              json={"name": name, "description": "research the PTO policy", "output": "answer", **extra})
+        return r.json()["id"]
+
+    # 1) A disabled agent cannot run.
+    aid = await make("Disabled agent", tools=["Search"])
+    async with services.db.acquire(services._test_tenant) as conn:
+        await conn.execute("UPDATE agents SET enabled=false WHERE id=$1", aid)
+    denied = await client.post(f"/api/agents/{aid}/run", headers=auth(token), json={})
+    assert denied.status_code == 409
+
+    # 2) Two agents with different source scopes behave differently over the same task.
+    broad = await make("Broad", sources=[])                 # all sources the user can read
+    narrow = await make("Narrow", sources=["nonexistent_source"])  # scoped to nothing real
+    broad_ev = await read_sse(client, f"/api/agents/{broad}/run", auth(token), {"task": "what is the PTO policy"})
+    narrow_ev = await read_sse(client, f"/api/agents/{narrow}/run", auth(token), {"task": "what is the PTO policy"})
+    broad_sources = next((e for e in broad_ev if e.get("type") == "sources"), {"sources": []})
+    narrow_sources = next((e for e in narrow_ev if e.get("type") == "sources"), {"sources": []})
+    assert len(broad_sources["sources"]) > 0
+    assert len(narrow_sources["sources"]) == 0  # scope restricts retrieval to nothing
+    assert any(e.get("label") == "Scoped to agent sources" for e in narrow_ev)
+
+    # 3) Tool allowlist gates side effects: a granted side-effect tool stops at an approval…
+    granted = await make("Jira agent", tools=["Search", "Jira"])
+    ev = await read_sse(client, f"/api/agents/{granted}/run", auth(token), {"task": "summarise"})
+    assert any(e.get("type") == "approval" and e.get("tool") == "jira" for e in ev)
+    # …while an agent without any granted side-effect tool never proposes one.
+    readonly = await make("Readonly agent", tools=["Search"])
+    ev2 = await read_sse(client, f"/api/agents/{readonly}/run", auth(token), {"task": "summarise"})
+    assert not any(e.get("type") == "approval" for e in ev2)
+
+
+async def test_tenant_isolation(client, services):
+    """A token from this tenant must never read another tenant's data."""
+    admin = await token_for(client, services, "admin")
+    # Create a second tenant with a doc, directly.
+    async with services.db.admin() as conn:
+        other = await conn.fetchval("INSERT INTO tenants (slug,name) VALUES ($1,$1) RETURNING id", f"other-{services._test_slug}")
+    try:
+        from enaz.ingest.pipeline import SourceDocument
+        await services.ingest.ingest(str(other), SourceDocument("x", "Other tenant secret", "drive", ["public"], text="Secret from another company entirely."))
+        r = await client.get("/api/search", params={"q": "Other tenant secret company"}, headers=auth(admin))
+        assert "Other tenant secret" not in [h["title"] for h in r.json()["results"]]
+    finally:
+        async with services.db.admin() as conn:
+            await conn.execute("DELETE FROM tenants WHERE id = $1", other)
+
+
+async def test_connector_catalog_has_universal(client, services):
+    token = await token_for(client, services, "admin")
+    resp = await client.get("/api/connectors/catalog", headers=auth(token))
+    types = {c["type"] for c in resp.json()["connectors"]}
+    assert {"rest", "mcp", "web", "github"} <= types
+    live = {c["type"] for c in resp.json()["connectors"] if c["live"]}
+    assert {"web", "github", "rest", "mcp"} <= live
+
+
+async def test_code_interpreter_session(client, services):
+    import uuid
+
+    token = await token_for(client, services, "admin")
+    cid = str(uuid.uuid4())
+    # Upload a CSV; markitdown extracts it.
+    files = {"file": ("sales.csv", b"product,revenue\nAlpha,120\nBeta,90\nGamma,150\n", "text/csv")}
+    up = await client.post(f"/api/conversations/{cid}/files", headers=auth(token), files=files)
+    assert up.status_code == 200
+    assert up.json()["extracted"] is True
+
+    # The AI runs code over the uploaded file: compute + chart + a derived file.
+    code = (
+        "import pandas as pd, matplotlib.pyplot as plt\n"
+        "df = pd.read_csv('sales.csv')\n"
+        "print('total', df.revenue.sum())\n"
+        "df.plot.bar(x='product', y='revenue'); plt.savefig('chart.png')\n"
+        "df.to_csv('out.csv', index=False)\n"
+    )
+    run = await client.post(f"/api/conversations/{cid}/run", headers=auth(token), json={"code": code})
+    assert run.status_code == 200
+    data = run.json()
+    assert data["returnCode"] == 0
+    assert "total 360" in data["stdout"]
+    names = {f["name"] for f in data["files"]}
+    assert "chart.png" in names and "out.csv" in names
+    assert data["images"] and data["images"][0]["dataUrl"].startswith("data:image/png;base64,")
+
+    # The generated file is listed and downloadable.
+    listed = await client.get(f"/api/conversations/{cid}/files", headers=auth(token))
+    listed_names = {f["name"] for f in listed.json()["files"]}
+    assert {"sales.csv", "chart.png", "out.csv"} <= listed_names
+    assert not any(n.startswith(".") for n in listed_names)
+    dl = await client.get(f"/api/conversations/{cid}/files/chart.png/download", headers=auth(token))
+    assert dl.status_code == 200 and dl.content[:4] == b"\x89PNG"
+
+
+async def test_sandbox_blocks_network(client, services):
+    import uuid
+
+    token = await token_for(client, services, "admin")
+    cid = str(uuid.uuid4())
+    code = "import socket; socket.setdefaulttimeout(2); socket.create_connection(('1.1.1.1', 53)); print('REACHED')"
+    run = await client.post(f"/api/conversations/{cid}/run", headers=auth(token), json={"code": code})
+    data = run.json()
+    assert "REACHED" not in data["stdout"]
+    # Isolation is active in this environment.
+    assert data["networkIsolated"] is True
+
+
+async def test_connector_sync_engine_tracks_index_attempts(client, services):
+    """Drive the real sync engine with an in-process connector: new/updated/removed
+    classification, incremental unchanged detection, pruning, and index-attempt rows."""
+    from enaz.ingest.connectors.base import Connector, ConnectorMeta, register
+    from enaz.ingest.pipeline import SourceDocument
+    from enaz.ingest.sync import run_sync
+
+    # A fake connector whose output we control between syncs.
+    docs_state = {
+        "docs": [("a", "Alpha", "alpha body one"), ("b", "Beta", "beta body two")],
+    }
+
+    @register
+    class _FakeConnector(Connector):
+        meta = ConnectorMeta(type="_fake", name="Fake", category="Other", sync="poll",
+                             acl=False, logo="custom", config_fields=[])
+
+        async def fetch(self, cursor=None):
+            for ext, title, body in docs_state["docs"]:
+                yield SourceDocument(external_id=ext, title=title, source="_fake",
+                                     acl=["public"], text=body, path="fake")
+
+    tid = services._test_tenant
+    async with services.db.acquire(tid) as conn:
+        cid = str(await conn.fetchval(
+            "INSERT INTO connectors (tenant_id,type,name,config,status) VALUES ($1,'_fake','Fake','{}','idle') RETURNING id",
+            tid,
+        ))
+
+    # First sync: both documents are new.
+    r1 = await run_sync(services, tid, cid)
+    assert r1["new"] == 2 and r1["updated"] == 0 and r1["total"] == 2
+
+    # Second sync, identical content: nothing new or updated.
+    r2 = await run_sync(services, tid, cid)
+    assert r2["new"] == 0 and r2["updated"] == 0 and r2["total"] == 2
+
+    # Change one doc's body and drop the other: one updated, one removed.
+    docs_state["docs"] = [("a", "Alpha", "alpha body CHANGED")]
+    r3 = await run_sync(services, tid, cid)
+    assert r3["new"] == 0 and r3["updated"] == 1 and r3["removed"] == 1 and r3["total"] == 1
+
+    # Index attempts were recorded, newest first, all successful.
+    async with services.db.acquire(tid) as conn:
+        rows = await conn.fetch(
+            "SELECT status, new_docs, updated_docs, removed_docs FROM index_attempts WHERE connector_id=$1 ORDER BY started_at",
+            cid,
+        )
+    assert len(rows) == 3
+    assert [r["status"] for r in rows] == ["success", "success", "success"]
+    assert rows[0]["new_docs"] == 2 and rows[2]["removed_docs"] == 1
+
+    # Re-index both docs so there is content to scope, then prove document-set
+    # scoping actually restricts retrieval to the set's connectors.
+    docs_state["docs"] = [("a", "Alpha", "alpha body one"), ("b", "Beta", "beta body two")]
+    await run_sync(services, tid, cid)
+    async with services.db.acquire(tid) as conn:
+        scoped = await services.searcher.search(conn, "alpha", ["public"], k=5, connector_ids=[cid])
+        empty = await services.searcher.search(conn, "alpha", ["public"], k=5, connector_ids=["__none__"])
+    assert scoped.hits and all(getattr(h, "doc_id", None) for h in scoped.hits)
+    assert empty.hits == []  # a set with no matching connector scopes to nothing
+
+
+async def test_answer_correction_becomes_authoritative(client, services):
+    """Submit a correction, approve it, then the same question returns the verified answer."""
+    admin = await token_for(client, services, "admin")
+    q = "what is the data retention window for logs"
+    sub = await client.post("/api/corrections", headers=auth(admin),
+                            json={"query": q, "correctedAnswer": "Logs are retained for 400 days.",
+                                  "evidenceUrl": "https://wiki/retention", "scope": ["public"]})
+    assert sub.status_code == 200
+    cid = sub.json()["id"]
+    # Approve it (admin is a reviewer).
+    rev = await client.post(f"/api/corrections/{cid}/review", headers=auth(admin),
+                            json={"decision": "approve", "expiresDays": 90})
+    assert rev.status_code == 200 and rev.json()["status"] == "approved"
+    # Ask the same question: the verified correction is served authoritatively.
+    events = await read_sse(client, "/api/assistant/ask", auth(admin), {"query": q, "mode": "auto"})
+    assert any(e.get("type") == "correction" for e in events)
+    answer = next((e for e in events if e.get("type") == "answer"), {})
+    assert "400 days" in answer.get("text", "")
+
+    # A non-reviewer cannot approve.
+    member = await token_for(client, services, "member")
+    sub2 = await client.post("/api/corrections", headers=auth(member),
+                             json={"query": "unrelated q", "correctedAnswer": "x"})
+    denied = await client.post(f"/api/corrections/{sub2.json()['id']}/review", headers=auth(member),
+                               json={"decision": "approve"})
+    assert denied.status_code == 403
+
+
+async def test_work_inbox_buckets(client, services):
+    admin = await token_for(client, services, "admin")
+    # A pending correction shows up as needs_decision for a reviewer.
+    await client.post("/api/corrections", headers=auth(admin),
+                      json={"query": "inbox test q", "correctedAnswer": "y"})
+    inbox = await client.get("/api/inbox", headers=auth(admin))
+    assert inbox.status_code == 200
+    data = inbox.json()
+    assert data["canReview"] is True
+    assert "needs_decision" in data["counts"]
+    assert any(it["type"] == "correction" and it["bucket"] == "needs_decision" for it in data["items"])
+    # Every item carries a next action.
+    assert all(it.get("nextAction") for it in data["items"])
+
+
+async def test_agent_test_mode_is_dry_run(client, services):
+    admin = await token_for(client, services, "admin")
+    created = await client.post("/api/agents", headers=auth(admin),
+                                json={"name": "Jira writer", "description": "file the PTO ticket",
+                                      "tools": ["Search", "Jira"], "output": "answer"})
+    aid = created.json()["id"]
+    before = await client.get("/api/approvals", headers=auth(admin))
+    n_before = len(before.json()["approvals"])
+    res = await client.post(f"/api/agents/{aid}/test", headers=auth(admin), json={"task": "file it"})
+    assert res.status_code == 200
+    data = res.json()
+    jira = next((t for t in data["proposedTools"] if t["tool"].lower() == "jira"), None)
+    assert jira and jira["wouldCall"] is True and jira["verifiedAgainstLive"] is False
+    assert "producedAnswer" in data["followedInstructions"]
+    # Dry run must not create an approval.
+    after = await client.get("/api/approvals", headers=auth(admin))
+    assert len(after.json()["approvals"]) == n_before
+
+
+async def _make_agent(client, token, **extra):
+    r = await client.post("/api/agents", headers=auth(token),
+                          json={"name": extra.pop("name", "Worker agent"), "description": "research the PTO policy",
+                                "output": "answer", **extra})
+    return r.json()["id"]
+
+
+async def test_durable_run_engine_executes_and_checkpoints(client, services):
+    """A queued job is claimed and run to success; a reclaimed (expired-lease) job
+    resumes from its checkpoint instead of re-answering."""
+    from enaz.run_engine import claim_next, enqueue, execute_job, run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    tid = services._test_tenant
+    aid = await _make_agent(client, admin, name="Durable", tools=["Search"])
+
+    # Enqueue via the API, then drive one worker tick.
+    r = await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "what is the PTO policy"})
+    job_id = r.json()["jobId"]
+    assert await run_worker_once(services) is True
+    got = await client.get(f"/api/jobs/{job_id}", headers=auth(admin))
+    data = got.json()
+    assert data["status"] == "succeeded"
+    kinds = {e.get("type") for e in data["events"]}
+    assert {"run.started", "run.finished"} <= kinds
+    assert data["result"].get("answer")
+
+    # Idempotency: same key returns the same job.
+    uid = (await client.get("/api/auth/me", headers=auth(admin))).json()["user"]["id"]
+    k = "dedupe-123"
+    j1 = await enqueue(services, tid, aid, uid, "x", idempotency_key=k)
+    j2 = await enqueue(services, tid, aid, uid, "x", idempotency_key=k)
+    assert j1 == j2
+
+    # Checkpoint/resume: a job with an 'answered' checkpoint finishes WITHOUT
+    # re-answering (execute_job is the reclaim path; claim ordering is covered above).
+    async with services.db.acquire(tid) as conn:
+        rid = await conn.fetchval(
+            """INSERT INTO agent_jobs (tenant_id, agent_id, user_id, task, status, checkpoint, lease_until)
+               VALUES ($1,$2,NULL,'resume me','running','{"answered": true}'::jsonb, now() - interval '5 minutes')
+               RETURNING id""",
+            tid, aid,
+        )
+        job_row = dict(await conn.fetchrow("SELECT * FROM agent_jobs WHERE id=$1", rid))
+    outcome = await execute_job(services, job_row)
+    assert outcome == "succeeded"
+    async with services.db.acquire(tid) as conn:
+        evs = await conn.fetch("SELECT event FROM agent_job_events WHERE job_id=$1 ORDER BY seq", rid)
+    labels = [(json.loads(e["event"]) if isinstance(e["event"], str) else e["event"]).get("label") for e in evs]
+    assert "Resumed" in labels  # did not re-run the answer step
+
+
+async def test_durable_run_cancel_and_sideeffect(client, services):
+    from enaz.run_engine import request_cancel, run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    tid = services._test_tenant
+
+    # Cancel before it runs → cancelled, and the worker never executes it.
+    aid = await _make_agent(client, admin, name="Cancellable", tools=["Search"])
+    jid = (await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "q"})).json()["jobId"]
+    status = await request_cancel(services, tid, jid)
+    assert status == "cancelled"
+    # The only runnable job may be another test's; ensure this one stays cancelled.
+    got = await client.get(f"/api/jobs/{jid}", headers=auth(admin))
+    assert got.json()["status"] == "cancelled"
+
+    # A side-effect agent parks at approval with a 'proposed' receipt.
+    said = await _make_agent(client, admin, name="Jira durable", tools=["Search", "Jira"])
+    sjid = (await client.post(f"/api/agents/{said}/jobs", headers=auth(admin), json={"task": "file it"})).json()["jobId"]
+    # Drain the queue until our side-effect job is processed.
+    for _ in range(10):
+        if not await run_worker_once(services):
+            break
+    got = await client.get(f"/api/jobs/{sjid}", headers=auth(admin))
+    data = got.json()
+    assert data["status"] == "awaiting_approval"
+    assert any(e.get("type") == "interrupt" for e in data["events"])
+    assert any(rc["status"] == "proposed" and rc["tool"] == "jira" for rc in data["receipts"])
+
+
+async def test_durable_approve_resume_executes_action(client, services):
+    """Approving a parked job executes the (edited) action once, writes a done
+    receipt and a tool.result event, and finishes the run; a second approve is a
+    no-op (idempotent)."""
+    from enaz.run_engine import run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    aid = await _make_agent(client, admin, name="Jira resume", tools=["Search", "Jira"])
+    jid = (await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "file the ticket"})).json()["jobId"]
+    for _ in range(10):
+        if not await run_worker_once(services):
+            break
+    job = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert job["status"] == "awaiting_approval"
+    approval_id = next(e["approvalId"] for e in job["events"] if e.get("type") == "interrupt")
+
+    # Approve with edited args.
+    dec = await client.post(f"/api/approvals/{approval_id}", headers=auth(admin),
+                            json={"decision": "approve", "args": {"summary": "EDITED summary", "priority": "high"}})
+    assert dec.status_code == 200 and dec.json()["jobStatus"] == "succeeded"
+
+    done = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert done["status"] == "succeeded"
+    assert done["result"]["actionTaken"] is True
+    assert done["result"]["action"]["args"]["summary"] == "EDITED summary"
+    assert any(e.get("type") == "tool.result" for e in done["events"])
+    assert any(rc["status"] == "done" and rc["tool"] == "jira" for rc in done["receipts"])
+
+    # Idempotent: approving again does not change the terminal state or re-run.
+    again = await client.post(f"/api/approvals/{approval_id}", headers=auth(admin), json={"decision": "approve"})
+    assert again.json()["jobStatus"] == "succeeded"
+    done2 = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert sum(1 for rc in done2["receipts"] if rc["status"] == "done") == 1
+
+
+async def test_durable_deny_finishes_without_side_effect(client, services):
+    from enaz.run_engine import run_worker_once
+
+    admin = await token_for(client, services, "admin")
+    aid = await _make_agent(client, admin, name="Slack deny", tools=["Search", "Slack"])
+    jid = (await client.post(f"/api/agents/{aid}/jobs", headers=auth(admin), json={"task": "post it"})).json()["jobId"]
+    for _ in range(10):
+        if not await run_worker_once(services):
+            break
+    job = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    approval_id = next(e["approvalId"] for e in job["events"] if e.get("type") == "interrupt")
+
+    dec = await client.post(f"/api/approvals/{approval_id}", headers=auth(admin), json={"decision": "deny"})
+    assert dec.json()["jobStatus"] == "succeeded"
+    done = (await client.get(f"/api/jobs/{jid}", headers=auth(admin))).json()
+    assert done["result"]["actionTaken"] is False and done["result"]["denied"] is True
+    # No executed (done) receipt; the proposed one is marked denied.
+    assert not any(rc["status"] == "done" for rc in done["receipts"])
+    assert any(rc["status"] == "denied" for rc in done["receipts"])
+
+
+async def test_scoped_memory_crud_and_run_injection(client, services):
+    """Personal/agent/shared memory CRUD, and memory is gathered into agent runs."""
+    from enaz.run_engine import _gather_memory
+
+    admin = await token_for(client, services, "admin")
+    aid = await _make_agent(client, admin, name="Memo agent", tools=["Search"])
+
+    # Create one of each scope.
+    await client.post("/api/settings/memory", headers=auth(admin), json={"text": "prefers concise answers", "scope": "personal"})
+    await client.post("/api/settings/memory", headers=auth(admin), json={"text": "always cite the handbook", "scope": "agent", "agentId": aid})
+    await client.post("/api/settings/memory", headers=auth(admin), json={"text": "company fiscal year starts in April", "scope": "shared"})
+    off = await client.post("/api/settings/memory", headers=auth(admin), json={"text": "do not use this one", "scope": "shared", "useInRuns": False})
+
+    listed = (await client.get("/api/settings/memory", headers=auth(admin))).json()["memories"]
+    scopes = {m["scope"] for m in listed}
+    assert {"personal", "agent", "shared"} <= scopes
+
+    uid = (await client.get("/api/auth/me", headers=auth(admin))).json()["user"]["id"]
+    gathered = await _gather_memory(services, services._test_tenant, uid, aid)
+    assert "concise" in gathered and "handbook" in gathered and "fiscal year" in gathered
+    assert "do not use this one" not in gathered  # use_in_runs=false excluded
+
+    # Deleting a shared memory stops it influencing later runs.
+    await client.delete(f"/api/settings/memory/{off.json()['id']}", headers=auth(admin))
+    # Delete the fiscal-year one and confirm it's gone from the gather.
+    fy = next(m for m in listed if "fiscal year" in m["text"])
+    await client.delete(f"/api/settings/memory/{fy['id']}", headers=auth(admin))
+    gathered2 = await _gather_memory(services, services._test_tenant, uid, aid)
+    assert "fiscal year" not in gathered2
+
+
+async def test_live_source_query_is_read_only(client, services):
+    """A SQL live source returns current rows; writes and non-SELECT are rejected."""
+    admin = await token_for(client, services, "admin")
+    # A read-only SELECT against our own data proves the live-query path.
+    created = await client.post("/api/live", headers=auth(admin), json={
+        "name": "Doc count", "kind": "sql",
+        "config": {"query": "SELECT source, count(*) AS n FROM documents GROUP BY source"},
+    })
+    sid = created.json()["id"]
+    res = await client.post(f"/api/live/{sid}/query", headers=auth(admin), json={})
+    assert res.status_code == 200
+    data = res.json()
+    assert "source" in data["columns"] and data["checkedAt"] and data["rowCount"] >= 0
+
+    # A write is rejected at validation time.
+    bad = await client.post("/api/live", headers=auth(admin), json={
+        "name": "evil", "kind": "sql", "config": {"query": "DELETE FROM documents"},
+    })
+    q = await client.post(f"/api/live/{bad.json()['id']}/query", headers=auth(admin), json={})
+    assert q.status_code == 400
+
+    # A non-reviewer cannot register a live source.
+    member = await token_for(client, services, "member")
+    denied = await client.post("/api/live", headers=auth(member), json={"name": "x", "kind": "sql", "config": {"query": "SELECT 1"}})
+    assert denied.status_code == 403
+
+
+async def test_live_data_folds_into_answer(client, services):
+    """Asking with a live source emits a live event and the current records reach the answer."""
+    admin = await token_for(client, services, "admin")
+    sid = (await client.post("/api/live", headers=auth(admin), json={
+        "name": "Open projects", "kind": "sql",
+        "config": {"query": "SELECT title FROM documents LIMIT 3"},
+    })).json()["id"]
+    events = await read_sse(client, "/api/assistant/ask", auth(admin),
+                            {"query": "summarise current project records", "mode": "auto", "liveSourceId": sid})
+    assert any(e.get("type") == "live" for e in events)
+    assert any(e.get("type") == "step" and e.get("label") == "Checked live data" for e in events)
+    answer = next((e for e in events if e.get("type") == "answer"), {})
+    assert answer.get("text")
+
+
+async def test_connected_artifact_freshness_and_refresh(client, services):
+    """A generated artifact tracks its sources; a source change marks it stale and
+    refresh proposes a diffed new version without overwriting."""
+    admin = await token_for(client, services, "admin")
+    tid = services._test_tenant
+    # Generate a doc artifact from a real answer (records its source docs).
+    events = await read_sse(client, "/api/assistant/ask", auth(admin),
+                            {"query": "summarise the security review", "mode": "research", "artifact": "doc"})
+    ev = next((e for e in events if e.get("type") == "artifact"), None)
+    assert ev, "expected an artifact to be generated"
+    art_id = ev["artifactId"]
+
+    fresh = (await client.get(f"/api/artifacts/{art_id}/freshness", headers=auth(admin))).json()
+    assert fresh["sourceCount"] >= 1 and fresh["stale"] is False
+
+    # Simulate a source document changing.
+    async with services.db.acquire(tid) as conn:
+        doc_id = await conn.fetchval("SELECT doc_id FROM artifact_sources WHERE artifact_id=$1 LIMIT 1", art_id)
+        await conn.execute("UPDATE documents SET content_hash='CHANGED-"+str(doc_id)[:8]+"' WHERE id=$1", doc_id)
+
+    stale = (await client.get(f"/api/artifacts/{art_id}/freshness", headers=auth(admin))).json()
+    assert stale["stale"] is True
+    assert any(c["docId"] == str(doc_id) for c in stale["changedSources"])
+
+    # Refresh proposes a new spec + diff, without overwriting (still version 1).
+    proposal = (await client.post(f"/api/artifacts/{art_id}/refresh", headers=auth(admin))).json()
+    assert "proposedSpec" in proposal and "diff" in proposal
+    before = (await client.get(f"/api/artifacts/{art_id}", headers=auth(admin))).json()
+    assert before["version"] == 1
+
+    # Accept → new version, and the artifact reads fresh again.
+    acc = await client.post(f"/api/artifacts/{art_id}/refresh/accept", headers=auth(admin),
+                            json={"spec": proposal["proposedSpec"]})
+    assert acc.json()["version"] == 2
+    after = (await client.get(f"/api/artifacts/{art_id}/freshness", headers=auth(admin))).json()
+    assert after["stale"] is False
+
+
+async def test_discovery_entity_timeline_experts(client, services):
+    """Entity page, timeline and expert handoff aggregate permission-filtered results."""
+    admin = await token_for(client, services, "admin")
+
+    page = (await client.get("/api/entities/page", headers=auth(admin), params={"name": "security", "type": "project"})).json()
+    assert "related" in page and "owners" in page and "recent" in page and "openWork" in page
+
+    tl = (await client.get("/api/timeline", headers=auth(admin), params={"q": "security review"})).json()
+    assert "entries" in tl and tl["pointInTime"] is False
+    # Timeline is newest-first by updatedAt.
+    ts = [e["updatedAt"] or 0 for e in tl["entries"]]
+    assert ts == sorted(ts, reverse=True)
+
+    ex = (await client.get("/api/experts", headers=auth(admin), params={"q": "security review"})).json()
+    assert "experts" in ex and ex["preparedQuestion"] and "security review" in ex["preparedQuestion"]
+
+    # Permission filtering: a client with narrow access gets no more than admin.
+    client_tok = await token_for(client, services, "client")
+    ctl = (await client.get("/api/timeline", headers=auth(client_tok), params={"q": "security review"})).json()
+    assert len(ctl["entries"]) <= len(tl["entries"])

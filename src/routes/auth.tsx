@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { AuthLayout, Field, SocialButtons } from "@/components/app/AuthLayout";
@@ -9,10 +10,13 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
-      { title: "Sign in — Enaz Project Tracker" },
-      { name: "description", content: "Sign in to your Enaz workspace and pick a role to preview." },
-      { property: "og:title", content: "Sign in — Enaz Project Tracker" },
-      { property: "og:description", content: "Sign in to your Enaz project tracking workspace." },
+      { title: "Sign in — Enaz Knowledge" },
+      {
+        name: "description",
+        content: "Sign in to your Enaz workspace and pick a role to preview.",
+      },
+      { property: "og:title", content: "Sign in — Enaz Knowledge" },
+      { property: "og:description", content: "Sign in to your Enaz knowledge workspace." },
     ],
   }),
   component: SignIn,
@@ -26,17 +30,25 @@ function SignIn() {
   const [role, setRole] = useState<Role>("admin");
 
   useEffect(() => {
-    if (ready && user) navigate({ to: "/dashboard", replace: true });
+    if (ready && user) navigate({ to: "/assistant", replace: true });
   }, [ready, user, navigate]);
 
   return (
-    <AuthLayout title="Welcome back" subtitle="Sign in to pick up where your team left off." slide={0}>
+    <AuthLayout
+      title="Welcome back"
+      subtitle="Sign in to pick up where your team left off."
+      slide={0}
+    >
       <form
         className="space-y-5"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          signIn(role);
-          navigate({ to: "/dashboard" });
+          try {
+            await signIn(role);
+            navigate({ to: "/assistant" });
+          } catch {
+            toast.error("Sign in failed. Is the backend reachable?");
+          }
         }}
       >
         <Field label="Email" type="email" defaultValue="alina@enaz.studio" />

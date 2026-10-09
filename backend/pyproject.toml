@@ -1,0 +1,40 @@
+[project]
+name = "enaz"
+version = "0.1.0"
+description = "Enaz Knowledge backend: permission-aware hybrid search, decision layer, research, artifacts and agents"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "anthropic>=1.12",
+  "httpx>=0.27",
+  "python-multipart>=0.0.9",
+  "pyjwt>=2.8",
+  "numpy>=1.26",
+  "asyncpg>=0.29",
+  "pgvector>=0.2.5",
+  "alembic>=1.13",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.1",
+  "redis>=5.0",
+  "pypdf>=4.0",
+  "python-docx>=1.1",
+  "python-pptx>=1.0",
+  "openpyxl>=3.1",
+  "beautifulsoup4>=4.12",
+  "markitdown[all]>=0.1",
+  "markdownify>=0.11",
+  "readability-lxml>=0.8",
+  "pandas>=2.0",
+  "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::UserWarning"]

@@ -19,9 +19,9 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/_app/projects/$id")({
   head: () => ({
     meta: [
-      { title: "Project detail — Enaz Project Tracker" },
+      { title: "Project detail — Enaz Knowledge" },
       { name: "description", content: "Overview, tasks, files and activity for a single project." },
-      { property: "og:title", content: "Project detail — Enaz Project Tracker" },
+      { property: "og:title", content: "Project detail — Enaz Knowledge" },
       { property: "og:description", content: "Overview, tasks, files and activity for a project." },
     ],
   }),

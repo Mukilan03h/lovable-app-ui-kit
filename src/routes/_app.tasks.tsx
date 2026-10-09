@@ -12,9 +12,9 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/_app/tasks")({
   head: () => ({
     meta: [
-      { title: "Tasks — Enaz Project Tracker" },
+      { title: "Tasks — Enaz Knowledge" },
       { name: "description", content: "Kanban board and list view for every task, priority and due date." },
-      { property: "og:title", content: "Tasks — Enaz Project Tracker" },
+      { property: "og:title", content: "Tasks — Enaz Knowledge" },
       { property: "og:description", content: "Kanban board and list view for every task." },
     ],
   }),
