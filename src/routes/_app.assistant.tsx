@@ -9,6 +9,9 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  Clock,
+  Coins,
+  Columns3,
   Copy,
   FileText,
   FolderOpen,
@@ -56,7 +59,14 @@ import {
   type SourceApp,
   type Step,
 } from "@/data/knowledge";
-import { api, apiStream, downloadUrl, type ConversationSummary } from "@/lib/api";
+import {
+  api,
+  apiStream,
+  downloadUrl,
+  type CompareAnswer,
+  type CompareResponse,
+  type ConversationSummary,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/_app/assistant")({
   validateSearch: (search: Record<string, unknown>): { artifact?: ArtifactKind } => {
@@ -94,6 +104,15 @@ const modes = [
   },
   { id: "agent", label: "Agent", hint: "Can take actions with your approval" },
 ] as const;
+
+const compareModels = [
+  { id: "claude-haiku-5-5", label: "Haiku 5.5" },
+  { id: "claude-sonnet-5-5", label: "Sonnet 5.5" },
+  { id: "claude-opus-5-5", label: "Opus 5.5" },
+] as const;
+
+const compareLabel = (id: string) =>
+  compareModels.find((m) => m.id === id)?.label ?? id;
 
 const scopeSources: SourceApp[] = [
   "slack",
@@ -170,6 +189,12 @@ function AssistantPage() {
   const [sessionFiles, setSessionFiles] = useState<string[]>([]);
   const [results, setResults] = useState<Record<number, ShareTurn>>({});
   const [sharing, setSharing] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedModels, setSelectedModels] = useState<string[]>(
+    compareModels.map((m) => m.id),
+  );
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareResult, setCompareResult] = useState<CompareResponse | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -207,9 +232,38 @@ function AssistantPage() {
     }
   };
 
+  const toggleModel = (id: string) =>
+    setSelectedModels((cur) =>
+      cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
+    );
+
+  const runCompare = async (text: string) => {
+    const q = text.trim();
+    if (!q) return;
+    if (!selectedModels.length) {
+      toast("Pick at least one model to compare");
+      return;
+    }
+    setInput("");
+    setCompareLoading(true);
+    setCompareResult(null);
+    try {
+      const res = await api.compare(q, selectedModels, scope.length ? scope : undefined);
+      setCompareResult(res);
+    } catch {
+      toast.error("Couldn't compare models");
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
   const send = (text: string, kind?: ArtifactKind) => {
     const q = text.trim();
     if (!q) return;
+    if (compareMode) {
+      void runCompare(q);
+      return;
+    }
     setTurns((t) => [
       ...t,
       { id: Date.now(), question: q, artifact: kind ?? detectArtifact(q), mode, scope: [...scope] },
@@ -377,7 +431,9 @@ function AssistantPage() {
             bgClass[chatBackground],
           )}
         >
-          {turns.length === 0 ? (
+          {compareMode ? (
+            <CompareView loading={compareLoading} result={compareResult} />
+          ) : turns.length === 0 ? (
             <Welcome name={user?.name.split(" ")[0] ?? "there"} onPick={(t, k) => send(t, k)} />
           ) : (
             <div className="mx-auto max-w-3xl space-y-8">
@@ -397,7 +453,7 @@ function AssistantPage() {
 
         <div className="border-t border-border p-3 sm:p-4">
           <div className="mx-auto max-w-3xl space-y-2">
-            <div className="flex gap-1 overflow-x-auto pb-1">
+            <div className="flex items-center gap-1 overflow-x-auto pb-1">
               {modes.map((m) => (
                 <button
                   key={m.id}
@@ -405,10 +461,10 @@ function AssistantPage() {
                   onClick={() => setMode(m.id)}
                   className={cn(
                     "relative shrink-0 rounded-full px-3 py-1.5 text-xs font-medium text-muted-foreground",
-                    mode === m.id && "text-primary-foreground",
+                    mode === m.id && !compareMode && "text-primary-foreground",
                   )}
                 >
-                  {mode === m.id && (
+                  {mode === m.id && !compareMode && (
                     <motion.span
                       layoutId="mode-pill"
                       className="absolute inset-0 rounded-full bg-primary"
@@ -418,7 +474,45 @@ function AssistantPage() {
                   <span className="relative">{m.label}</span>
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setCompareMode((c) => !c)}
+                title="Ask once and compare answers from multiple Claude models side by side"
+                className={cn(
+                  "ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium",
+                  compareMode
+                    ? "border-brand bg-brand/12 text-brand"
+                    : "border-border text-muted-foreground",
+                )}
+              >
+                <Columns3 className="size-3.5" /> Compare models
+              </button>
             </div>
+            {compareMode && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-medium text-muted-foreground">Models</span>
+                {compareModels.map((m) => {
+                  const on = selectedModels.includes(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => toggleModel(m.id)}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full border py-0.5 pl-0.5 pr-2.5 text-[11px] font-medium",
+                        on
+                          ? "border-brand bg-brand/12 text-brand"
+                          : "border-border text-muted-foreground",
+                      )}
+                    >
+                      <BrandLogo id="anthropic" size="xs" className="rounded-full" />
+                      {m.label}
+                      {on && <Check className="size-3" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -577,6 +671,146 @@ function Welcome({
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Side-by-side model comparison. Asks `api.compare` once and renders one card
+ * per model over a shared, grounded source set. Self-contained so it merges
+ * cleanly alongside the single-answer chat flow.
+ */
+function CompareView({
+  loading,
+  result,
+}: {
+  loading: boolean;
+  result: CompareResponse | null;
+}) {
+  const answers = result?.answers ?? [];
+  const gridCols =
+    answers.length >= 3
+      ? "sm:grid-cols-2 xl:grid-cols-3"
+      : answers.length === 2
+        ? "sm:grid-cols-2"
+        : "";
+  return (
+    <div className="mx-auto max-w-5xl space-y-5">
+      <div className="flex items-start gap-2.5">
+        <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-brand/12 text-brand">
+          <Columns3 className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">Compare models</p>
+          <p className="text-xs text-muted-foreground">
+            Ask once and see how each Claude model answers — grounded in the same sources.
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="h-56 animate-pulse rounded-2xl border border-border bg-background/60"
+            />
+          ))}
+        </div>
+      ) : result ? (
+        <div className="space-y-5">
+          <p className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">Prompt:</span> {result.query}
+          </p>
+          {answers.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+              No models returned an answer.
+            </div>
+          ) : (
+            <div className={cn("grid gap-3", gridCols)}>
+              {answers.map((a) => (
+                <CompareCard key={a.model} answer={a} />
+              ))}
+            </div>
+          )}
+          {result.sources.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Shared sources
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {result.sources.map((s) => {
+                  const meta = sourceMeta(s.source);
+                  return (
+                    <div key={s.n} className="rounded-2xl border border-border p-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-brand">{s.n}</span>
+                        <BrandLogo id={meta.logo} size="xs" />
+                        <span className="text-[11px] font-medium text-muted-foreground">
+                          {meta.label}
+                        </span>
+                      </div>
+                      <p className="mt-1.5 truncate text-sm font-medium">{s.title}</p>
+                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                        {s.snippet}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col items-center rounded-2xl border border-dashed border-border px-6 py-14 text-center">
+          <span className="grid size-12 place-items-center rounded-2xl bg-muted text-muted-foreground">
+            <Columns3 className="size-5" />
+          </span>
+          <p className="mt-4 text-sm font-medium">Compare answers side by side</p>
+          <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+            Pick the models above, then ask a question below. Each model answers the same prompt
+            over the same grounded sources.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompareCard({ answer }: { answer: CompareAnswer }) {
+  const verified = answer.verification.supported === answer.verification.total;
+  const servedDiffers =
+    Boolean(answer.servedModel) && answer.servedModel !== answer.model;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex flex-col rounded-2xl border border-border bg-background/60 p-4"
+    >
+      <div className="flex items-center gap-2">
+        <BrandLogo id="anthropic" size="xs" />
+        <span className="text-sm font-semibold">{compareLabel(answer.model)}</span>
+        <Pill tone={verified ? "success" : "warning"} className="ml-auto shrink-0">
+          <ShieldCheck className="size-3" /> {answer.verification.supported}/
+          {answer.verification.total} claims verified
+        </Pill>
+      </div>
+      {servedDiffers && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Served by {compareLabel(answer.servedModel)}
+        </p>
+      )}
+      <p className="mt-3 flex-1 whitespace-pre-wrap text-sm leading-relaxed">
+        {answer.answer.replace(/\[(\d+)\]/g, "")}
+      </p>
+      <div className="mt-3 flex items-center gap-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1">
+          <Clock className="size-3" /> {answer.latencyMs} ms
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <Coins className="size-3" /> ${answer.cost.toFixed(4)}
+        </span>
+      </div>
+    </motion.div>
   );
 }
 
