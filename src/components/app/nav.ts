@@ -1,4 +1,4 @@
-import { Sparkles, Search, Plug, Bot, Files, BarChart3, Settings, ShieldCheck, Inbox, ListChecks, UsersRound } from "lucide-react";
+import { Sparkles, Search, Plug, Bot, Files, BarChart3, Settings, ShieldCheck, Inbox, ListChecks, UsersRound, BellRing } from "lucide-react";
 import type { Permission } from "@/lib/auth";
 
 export type NavItem = {
@@ -12,6 +12,7 @@ export const navItems: NavItem[] = [
   { label: "Assistant", to: "/assistant", icon: Sparkles, permission: "assistant" },
   { label: "Inbox", to: "/inbox", icon: Inbox, permission: "assistant" },
   { label: "Search", to: "/search", icon: Search, permission: "search" },
+  { label: "Alerts", to: "/alerts", icon: BellRing, permission: "search" },
   { label: "Artifacts", to: "/artifacts", icon: Files, permission: "artifacts" },
   { label: "Agents", to: "/agents", icon: Bot, permission: "agents" },
   { label: "Runs", to: "/runs", icon: ListChecks, permission: "agents" },

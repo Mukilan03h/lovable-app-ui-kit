@@ -16,6 +16,7 @@ import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as AppAdminRouteImport } from './routes/_app.admin'
 import { Route as AppAgentsRouteImport } from './routes/_app.agents'
+import { Route as AppAlertsRouteImport } from './routes/_app.alerts'
 import { Route as AppArtifactsRouteImport } from './routes/_app.artifacts'
 import { Route as AppAssistantRouteImport } from './routes/_app.assistant'
 import { Route as AppConnectorsRouteImport } from './routes/_app.connectors'
@@ -63,6 +64,11 @@ const AppAdminRoute = AppAdminRouteImport.update({
 const AppAgentsRoute = AppAgentsRouteImport.update({
   id: '/agents',
   path: '/agents',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAlertsRoute = AppAlertsRouteImport.update({
+  id: '/alerts',
+  path: '/alerts',
   getParentRoute: () => AppRoute,
 } as any)
 const AppArtifactsRoute = AppArtifactsRouteImport.update({
@@ -143,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
+  '/alerts': typeof AppAlertsRoute
   '/artifacts': typeof AppArtifactsRoute
   '/assistant': typeof AppAssistantRoute
   '/connectors': typeof AppConnectorsRoute
@@ -165,6 +172,7 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/admin': typeof AppAdminRoute
   '/agents': typeof AppAgentsRoute
+  '/alerts': typeof AppAlertsRoute
   '/artifacts': typeof AppArtifactsRoute
   '/assistant': typeof AppAssistantRoute
   '/connectors': typeof AppConnectorsRoute
@@ -189,6 +197,7 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/_app/admin': typeof AppAdminRoute
   '/_app/agents': typeof AppAgentsRoute
+  '/_app/alerts': typeof AppAlertsRoute
   '/_app/artifacts': typeof AppArtifactsRoute
   '/_app/assistant': typeof AppAssistantRoute
   '/_app/connectors': typeof AppConnectorsRoute
@@ -213,6 +222,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/admin'
     | '/agents'
+    | '/alerts'
     | '/artifacts'
     | '/assistant'
     | '/connectors'
@@ -235,6 +245,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/admin'
     | '/agents'
+    | '/alerts'
     | '/artifacts'
     | '/assistant'
     | '/connectors'
@@ -258,6 +269,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/_app/admin'
     | '/_app/agents'
+    | '/_app/alerts'
     | '/_app/artifacts'
     | '/_app/assistant'
     | '/_app/connectors'
@@ -332,6 +344,13 @@ declare module '@tanstack/react-router' {
       path: '/agents'
       fullPath: '/agents'
       preLoaderRoute: typeof AppAgentsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/alerts': {
+      id: '/_app/alerts'
+      path: '/alerts'
+      fullPath: '/alerts'
+      preLoaderRoute: typeof AppAlertsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/artifacts': {
@@ -438,6 +457,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppAdminRoute: typeof AppAdminRoute
   AppAgentsRoute: typeof AppAgentsRoute
+  AppAlertsRoute: typeof AppAlertsRoute
   AppArtifactsRoute: typeof AppArtifactsRoute
   AppAssistantRoute: typeof AppAssistantRoute
   AppConnectorsRoute: typeof AppConnectorsRoute
@@ -456,6 +476,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppAdminRoute: AppAdminRoute,
   AppAgentsRoute: AppAgentsRoute,
+  AppAlertsRoute: AppAlertsRoute,
   AppArtifactsRoute: AppArtifactsRoute,
   AppAssistantRoute: AppAssistantRoute,
   AppConnectorsRoute: AppConnectorsRoute,

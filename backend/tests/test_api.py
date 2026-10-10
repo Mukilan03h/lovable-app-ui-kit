@@ -816,3 +816,47 @@ async def test_multilingual_answer_language_bypasses_cache(client, services):
     es = await read_sse(client, "/api/assistant/ask", auth(admin), {**q, "answerLanguage": "Spanish"})
     assert next(e for e in es if e["type"] == "done")["cached"] is False
     assert next((e for e in es if e["type"] == "answer"), None)
+
+
+async def test_knowledge_alert_detects_new_and_changed(client, services):
+    """A saved search seeds a snapshot; later checks report new and changed
+    documents, permission-aware."""
+    from enaz.ingest.pipeline import SourceDocument
+
+    admin = await token_for(client, services, "admin")
+    tid = services._test_tenant
+
+    created = await client.post("/api/alerts", headers=auth(admin),
+                                json={"name": "GA watch", "query": "GA launch blocker"})
+    assert created.status_code == 200
+    aid = created.json()["id"]
+
+    # Freshly seeded → an immediate check reports no change.
+    first = (await client.post(f"/api/alerts/{aid}/check", headers=auth(admin))).json()
+    assert first["new"] == 0 and first["changed"] == 0
+
+    # A brand-new matching document shows up as 'new'.
+    await services.ingest.ingest(tid, SourceDocument(
+        "ga-new", "GA launch blocker update", "slack", ["public"],
+        text="New blocker on the GA launch: the SSO migration slipped to next week."))
+    second = (await client.post(f"/api/alerts/{aid}/check", headers=auth(admin))).json()
+    assert second["new"] >= 1
+    assert any(h["status"] == "new" for h in second["hits"])
+
+    # Touching an already-tracked document surfaces it as 'changed'.
+    async with services.db.acquire(tid) as conn:
+        await conn.execute("UPDATE documents SET updated_at = now() + interval '2 days' WHERE external_id='pub1'")
+    third = (await client.post(f"/api/alerts/{aid}/check", headers=auth(admin))).json()
+    assert third["changed"] >= 1
+    assert any(h["status"] == "changed" for h in third["hits"])
+
+    # The alert lists with a tracked count, and can be disabled then deleted.
+    listed = (await client.get("/api/alerts", headers=auth(admin))).json()["alerts"]
+    assert any(a["id"] == aid and a["tracked"] >= 1 for a in listed)
+    assert (await client.patch(f"/api/alerts/{aid}", headers=auth(admin), json={"enabled": False})).json()["enabled"] is False
+    assert (await client.delete(f"/api/alerts/{aid}", headers=auth(admin))).json()["ok"] is True
+
+    # A non-owner cannot check someone else's alert.
+    member = await token_for(client, services, "member")
+    other = await client.post(f"/api/alerts/{aid}/check", headers=auth(member))
+    assert other.status_code == 404

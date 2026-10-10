@@ -227,6 +227,14 @@ export const api = {
   // work inbox
   inbox: () => apiGet<InboxResponse>("/api/inbox"),
 
+  // knowledge alerts (saved searches)
+  alerts: () => apiGet<{ alerts: AlertRow[] }>("/api/alerts"),
+  createAlert: (body: { name: string; query: string; sources?: string[] }) =>
+    apiSend<{ id: string; name: string; query: string; tracked: number }>("/api/alerts", "POST", body),
+  checkAlert: (id: string) => apiSend<AlertCheck>(`/api/alerts/${id}/check`, "POST"),
+  patchAlert: (id: string, enabled: boolean) => apiSend<{ ok: boolean; enabled: boolean }>(`/api/alerts/${id}`, "PATCH", { enabled }),
+  deleteAlert: (id: string) => apiSend(`/api/alerts/${id}`, "DELETE"),
+
   // shared task rooms
   rooms: () => apiGet<{ rooms: RoomSummary[] }>("/api/rooms"),
   createRoom: (body: { name: string; task?: string; memberIds?: string[] }) =>
@@ -423,6 +431,26 @@ export type ArtifactRefresh = {
   currentSpec: Record<string, unknown>; proposedSpec: Record<string, unknown>;
   diff: { change: string; [k: string]: unknown }[];
 };
+export type AlertRow = {
+  id: string;
+  name: string;
+  query: string;
+  sources: string[];
+  enabled: boolean;
+  tracked: number;
+  lastChecked: number | null;
+  createdAt: number;
+};
+export type AlertHit = {
+  docId: string;
+  title: string;
+  source: string;
+  url: string | null;
+  snippet: string;
+  updatedAt: number | null;
+  status: "new" | "changed" | "existing";
+};
+export type AlertCheck = { hits: AlertHit[]; new: number; changed: number; confidence: number };
 export type CatalogAgent = {
   id: string;
   name: string;
