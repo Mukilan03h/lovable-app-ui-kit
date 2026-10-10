@@ -81,10 +81,25 @@ class AnswerService:
         conversation_id: str | None = None,
         extra_instructions: str = "",
         live_note: str = "",
+        answer_language: str = "",
+        page_context: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         started = time.perf_counter()
         ledger_cost = CostLedger()
         qvec = self.embedder.embed([query], kind="query")[0]
+
+        # Multilingual: answer in the requested language while reasoning over
+        # evidence in whatever language it was written. Folded into the agent
+        # instruction channel so it reaches both quick and research synthesis.
+        lang = (answer_language or "").strip()
+        if lang and lang.lower() not in ("en", "english", "auto", "default"):
+            directive = (
+                f"Write the entire answer in {lang}. Translate faithfully from the "
+                f"evidence even when the sources are in another language, but keep "
+                f"proper nouns, code, identifiers and citation markers [n] unchanged."
+            )
+            extra_instructions = (extra_instructions + "\n\n" + directive) if extra_instructions.strip() else directive
+            allow_cache = False  # language is not part of the cache key
 
         route = await self.router.classify(query, mode, wants_artifact, system1=system1)
         ledger_cost.cost += getattr(route, "router_cost", 0.0)
@@ -164,6 +179,16 @@ class AnswerService:
             yield {"type": "live", "checkedAt": time.time()}
             compute_note = (compute_note + "\n\n" if compute_note else "") + live_note
             allow_cache = False  # live data must not be cached
+
+        # Browser side panel: the web page the user is currently viewing, folded
+        # in as context so the answer can combine it with internal knowledge.
+        if page_context.strip():
+            yield {"type": "step", "tool": "page", "label": "Read current page",
+                   "detail": f"{len(page_context)} chars of page content"}
+            block = ("The user is currently viewing this web page. Use it as primary context "
+                     f"for the question:\n{page_context.strip()}")
+            compute_note = (compute_note + "\n\n" if compute_note else "") + block
+            allow_cache = False  # page-grounded answers are per-page, not cacheable
 
         if allow_cache and route.intent in ("lookup", "question") and not route.artifact:
             cached = await self.cache.get(tenant_id, acl_key, qvec)
@@ -393,8 +418,9 @@ class AnswerService:
             system = f"{system}\n\nAdditional instructions for this agent:\n{extra_instructions.strip()}"
         evidence = ledger.prompt_block(include_parent)
         compute_block = (
-            f"\n\nAdditional authoritative data (from the code interpreter and/or live business "
-            f"systems; treat it as ground truth and reference it directly. State figures from it as "
+            f"\n\nAdditional authoritative data (from the code interpreter, live business "
+            f"systems and/or the web page the user is viewing; treat it as ground truth and "
+            f"reference it directly. State figures from it as "
             f"recorded facts, and clearly distinguish them from explanations you infer from documents):"
             f"\n{compute_note}\n"
             if compute_note else ""

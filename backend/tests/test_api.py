@@ -698,3 +698,121 @@ async def test_discovery_entity_timeline_experts(client, services):
     client_tok = await token_for(client, services, "client")
     ctl = (await client.get("/api/timeline", headers=auth(client_tok), params={"q": "security review"})).json()
     assert len(ctl["entries"]) <= len(tl["entries"])
+
+
+async def test_agent_catalog_and_publish(client, services):
+    """Only published agents appear in the catalog, with owner, required access,
+    tools and measured metrics; unpublishing removes them again."""
+    admin = await token_for(client, services, "admin")
+    aid = await _make_agent(client, admin, name="Catalog agent", tools=["Search"], sources=["confluence"])
+
+    # Unpublished → not in the catalog.
+    empty = (await client.get("/api/agents/catalog", headers=auth(admin))).json()["agents"]
+    assert not any(a["id"] == aid for a in empty)
+
+    pub = await client.post(f"/api/agents/{aid}/publish", headers=auth(admin), json={"published": True})
+    assert pub.status_code == 200 and pub.json()["published"] is True
+
+    cat = (await client.get("/api/agents/catalog", headers=auth(admin))).json()["agents"]
+    entry = next(a for a in cat if a["id"] == aid)
+    assert entry["name"] == "Catalog agent"
+    assert entry["requiredAccess"] == ["confluence"]
+    assert "Search" in entry["tools"]
+    assert entry["owner"]                         # owner name resolved (or 'Enaz')
+    assert "successRate" in entry and "estimatedCostPerRun" in entry
+
+    # Unpublish removes it from the catalog.
+    await client.post(f"/api/agents/{aid}/publish", headers=auth(admin), json={"published": False})
+    gone = (await client.get("/api/agents/catalog", headers=auth(admin))).json()["agents"]
+    assert not any(a["id"] == aid for a in gone)
+
+
+async def test_task_rooms_membership_and_messages(client, services):
+    """Rooms are membership-gated; members post comments/decisions/handoffs, and a
+    decision must name an assignee. Non-members cannot read the room."""
+    admin = await token_for(client, services, "admin")
+    member = await token_for(client, services, "member")
+    member_uid = (await client.get("/api/auth/me", headers=auth(member))).json()["user"]["id"]
+    client_uid = (await client.get("/api/auth/me", headers=auth(await token_for(client, services, "client")))).json()["user"]["id"]
+
+    # Admin opens a room seeded with the member.
+    room = (await client.post("/api/rooms", headers=auth(admin),
+                              json={"name": "GA launch", "task": "unblock the launch", "memberIds": [member_uid]})).json()
+    rid = room["id"]
+
+    # Both members see the room in their list.
+    admin_rooms = (await client.get("/api/rooms", headers=auth(admin))).json()["rooms"]
+    assert any(r["id"] == rid for r in admin_rooms)
+    member_rooms = (await client.get("/api/rooms", headers=auth(member))).json()["rooms"]
+    assert any(r["id"] == rid for r in member_rooms)
+
+    # The non-member 'client' cannot read it.
+    forbidden = await client.get(f"/api/rooms/{rid}", headers=auth(await token_for(client, services, "client")))
+    assert forbidden.status_code == 403
+
+    # A comment, a decision (with assignee) and a handoff.
+    c = await client.post(f"/api/rooms/{rid}/messages", headers=auth(member),
+                          json={"kind": "comment", "body": "SharePoint sync is the blocker"})
+    assert c.status_code == 200 and c.json()["kind"] == "comment"
+    d = await client.post(f"/api/rooms/{rid}/messages", headers=auth(admin),
+                          json={"kind": "decision", "body": "Ship Friday", "assignee": "Liam"})
+    assert d.status_code == 200 and d.json()["kind"] == "decision"
+    h = await client.post(f"/api/rooms/{rid}/messages", headers=auth(admin),
+                          json={"kind": "handoff", "body": "over to you", "assignee": "member@test.com"})
+    assert h.status_code == 200
+
+    # A decision without an assignee is rejected.
+    bad = await client.post(f"/api/rooms/{rid}/messages", headers=auth(admin),
+                            json={"kind": "decision", "body": "no owner"})
+    assert bad.status_code == 400
+
+    # Room detail returns members and the ordered thread.
+    detail = (await client.get(f"/api/rooms/{rid}", headers=auth(admin))).json()
+    assert detail["room"]["name"] == "GA launch"
+    assert {m["userId"] for m in detail["members"]} >= {member_uid}
+    kinds = [m["kind"] for m in detail["messages"]]
+    assert kinds == ["comment", "decision", "handoff"]
+
+    # Adding the 'client' as a member lets them read the room.
+    add = await client.post(f"/api/rooms/{rid}/members", headers=auth(admin), json={"userId": client_uid})
+    assert add.status_code == 200
+    now_ok = await client.get(f"/api/rooms/{rid}", headers=auth(await token_for(client, services, "client")))
+    assert now_ok.status_code == 200
+
+    # Resolve the room.
+    res = await client.post(f"/api/rooms/{rid}/status", headers=auth(admin), json={"status": "resolved"})
+    assert res.json()["status"] == "resolved"
+
+
+async def test_browser_side_panel_grounds_in_page(client, services):
+    """The side panel answers over the page the user provides and still retrieves
+    related internal knowledge with citations."""
+    admin = await token_for(client, services, "admin")
+    events = await read_sse(client, "/api/assistant/sidepanel", auth(admin), {
+        "query": "What does this page say and how does it relate to our GA launch?",
+        "url": "https://example.com/launch-notes",
+        "title": "Launch notes",
+        "pageText": "The vendor confirmed the integration will be ready next week.",
+    })
+    types = [e["type"] for e in events]
+    assert "answer" in types and "done" in types
+    assert any(e.get("type") == "step" and e.get("label") == "Read current page" for e in events)
+    answer = next(e for e in events if e["type"] == "answer")
+    assert answer["text"]
+
+
+async def test_multilingual_answer_language_bypasses_cache(client, services):
+    """A target language threads through to synthesis and makes the answer
+    non-cacheable, so it is never served from the language-agnostic cache."""
+    admin = await token_for(client, services, "admin")
+    q = {"query": "What is blocking the GA launch?", "mode": "quick"}
+
+    # Warm the cache, then confirm the identical ask is served from it.
+    await read_sse(client, "/api/assistant/ask", auth(admin), q)
+    second = await read_sse(client, "/api/assistant/ask", auth(admin), q)
+    assert next(e for e in second if e["type"] == "done")["cached"] is True
+
+    # The same question with a target language must NOT come from that cache.
+    es = await read_sse(client, "/api/assistant/ask", auth(admin), {**q, "answerLanguage": "Spanish"})
+    assert next(e for e in es if e["type"] == "done")["cached"] is False
+    assert next((e for e in es if e["type"] == "answer"), None)

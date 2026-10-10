@@ -40,6 +40,45 @@ async def list_agents(principal: Principal = Depends(require("agents")), svc: Se
     return {"agents": agents}
 
 
+@router.get("/agents/catalog")
+async def agent_catalog(principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    """Discoverable, approved agents with owner, required access, measured success
+    and estimated operating cost (average cost per run)."""
+    async with svc.db.acquire(principal.tenant_id) as conn:
+        rows = await conn.fetch(
+            """SELECT a.id, a.name, a.description, a.tools, a.sources, a.output, a.enabled, a.published,
+                      u.name AS owner,
+                      (SELECT count(*) FROM agent_runs r WHERE r.agent_id=a.id) AS runs,
+                      (SELECT count(*) FROM agent_runs r WHERE r.agent_id=a.id AND r.status='succeeded') AS ok,
+                      (SELECT avg(r.cost) FROM agent_runs r WHERE r.agent_id=a.id AND r.cost > 0) AS avg_cost
+               FROM agents a LEFT JOIN users u ON u.id=a.owner_id
+               WHERE a.published = true ORDER BY a.name""",
+        )
+    out = []
+    for r in rows:
+        runs = r["runs"] or 0
+        out.append({
+            "id": str(r["id"]), "name": r["name"], "description": r["description"],
+            "requiredAccess": _load(r["sources"]), "tools": _load(r["tools"]), "output": r["output"],
+            "owner": r["owner"] or "Enaz", "enabled": r["enabled"],
+            "runs": runs, "successRate": round(100 * (r["ok"] or 0) / runs) if runs else None,
+            "estimatedCostPerRun": round(float(r["avg_cost"]), 6) if r["avg_cost"] else None,
+        })
+    return {"agents": out}
+
+
+class PublishBody(BaseModel):
+    published: bool = True
+
+
+@router.post("/agents/{agent_id}/publish")
+async def publish_agent(agent_id: str, body: PublishBody, principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
+    async with svc.db.acquire(principal.tenant_id) as conn:
+        await conn.execute("UPDATE agents SET published=$2 WHERE id=$1", agent_id, body.published)
+    await audit(svc, principal, "agent.publish" if body.published else "agent.unpublish", agent_id)
+    return {"ok": True, "published": body.published}
+
+
 class CreateAgent(BaseModel):
     name: str
     description: str = ""

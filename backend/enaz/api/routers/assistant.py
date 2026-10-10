@@ -23,6 +23,7 @@ class AskRequest(BaseModel):
     artifact: str | None = None     # slides | doc | sheet
     conversationId: str | None = None
     liveSourceId: str | None = None
+    answerLanguage: str | None = None
 
 
 class CompareRequest(BaseModel):
@@ -89,7 +90,43 @@ async def ask(
         principal.tenant_id, principals, ak, body.query,
         mode=body.mode, sources=body.sources, user_id=principal.user.id,
         wants_artifact=body.artifact, system1=system1, conversation_id=body.conversationId,
-        live_note=live_note,
+        live_note=live_note, answer_language=body.answerLanguage or "",
+    )
+    return StreamingResponse(
+        _sse(events),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
+
+
+class SidePanelRequest(BaseModel):
+    query: str
+    url: str = ""
+    title: str = ""
+    pageText: str = ""              # visible text of the page the user is viewing
+    sources: list[str] | None = None
+    answerLanguage: str | None = None
+
+
+@router.post("/sidepanel")
+async def sidepanel(
+    body: SidePanelRequest,
+    principal: Principal = Depends(require("assistant")),
+    svc: Services = Depends(get_services),
+) -> StreamingResponse:
+    """Browser side panel: answer a question about the page the user is currently
+    viewing, combined with related internal knowledge (ACL-filtered, cited)."""
+    principals = principal.principals
+    ak = acl_key(principals)
+    page = (body.pageText or "").strip()[:12000]
+    header = ""
+    if body.title or body.url:
+        header = f"Title: {body.title}\nURL: {body.url}\n\n"
+    page_context = (header + page) if page else ""
+    events = svc.answers.answer(
+        principal.tenant_id, principals, ak, body.query,
+        mode="quick", sources=body.sources, user_id=principal.user.id,
+        page_context=page_context, answer_language=body.answerLanguage or "",
     )
     return StreamingResponse(
         _sse(events),
