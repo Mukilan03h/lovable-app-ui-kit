@@ -227,6 +227,18 @@ export const api = {
   // work inbox
   inbox: () => apiGet<InboxResponse>("/api/inbox"),
 
+  // shared task rooms
+  rooms: () => apiGet<{ rooms: RoomSummary[] }>("/api/rooms"),
+  createRoom: (body: { name: string; task?: string; memberIds?: string[] }) =>
+    apiSend<{ id: string; name: string; task: string; status: string }>("/api/rooms", "POST", body),
+  room: (id: string) => apiGet<RoomDetail>(`/api/rooms/${id}`),
+  addRoomMember: (id: string, userId: string, role = "member") =>
+    apiSend<{ ok: boolean; userId: string; role: string }>(`/api/rooms/${id}/members`, "POST", { userId, role }),
+  postRoomMessage: (id: string, body: { kind?: string; body?: string; artifactId?: string; assignee?: string }) =>
+    apiSend<{ id: string; kind: string }>(`/api/rooms/${id}/messages`, "POST", body),
+  setRoomStatus: (id: string, status: "open" | "resolved") =>
+    apiSend<{ ok: boolean; status: string }>(`/api/rooms/${id}/status`, "POST", { status }),
+
   // answer corrections
   corrections: () => apiGet<{ corrections: Correction[]; canReview: boolean }>("/api/corrections"),
   submitCorrection: (body: { query: string; correctedAnswer: string; originalAnswer?: string; evidenceUrl?: string; scope?: string[] }) =>
@@ -237,6 +249,9 @@ export const api = {
 
   // agents
   agents: () => apiGet<{ agents: AgentRow[] }>("/api/agents"),
+  agentCatalog: () => apiGet<{ agents: CatalogAgent[] }>("/api/agents/catalog"),
+  publishAgent: (id: string, published: boolean) =>
+    apiSend<{ ok: boolean; published: boolean }>(`/api/agents/${id}/publish`, "POST", { published }),
   createAgent: (body: Record<string, unknown>) => apiSend("/api/agents", "POST", body),
   testAgent: (id: string, task?: string) => apiSend<AgentTestResult>(`/api/agents/${id}/test`, "POST", task ? { task } : {}),
   approvals: () => apiGet<{ approvals: ApprovalRow[] }>("/api/approvals"),
@@ -408,6 +423,47 @@ export type ArtifactRefresh = {
   currentSpec: Record<string, unknown>; proposedSpec: Record<string, unknown>;
   diff: { change: string; [k: string]: unknown }[];
 };
+export type CatalogAgent = {
+  id: string;
+  name: string;
+  description: string;
+  requiredAccess: string[];
+  tools: string[];
+  output: string;
+  owner: string;
+  enabled: boolean;
+  runs: number;
+  successRate: number | null;
+  estimatedCostPerRun: number | null;
+};
+export type RoomSummary = {
+  id: string;
+  name: string;
+  task: string;
+  status: string;
+  createdBy: string | null;
+  members: number;
+  messages: number;
+  decisions: number;
+  createdAt: number;
+};
+export type RoomMember = { userId: string; role: string; name: string; email: string };
+export type RoomMessage = {
+  id: string;
+  userId: string | null;
+  author: string;
+  kind: string;
+  body: string;
+  artifactId: string | null;
+  assignee: string;
+  createdAt: number;
+};
+export type RoomDetail = {
+  room: { id: string; name: string; task: string; status: string; createdBy: string | null };
+  myRole: string;
+  members: RoomMember[];
+  messages: RoomMessage[];
+};
 export type LiveSource = { id: string; name: string; kind: string; description: string; enabled: boolean };
 export type LiveQueryResult = { name: string; columns: string[]; rows: unknown[][]; checkedAt: number; rowCount: number };
 export type MemoryRow = {
@@ -427,7 +483,7 @@ export type JobDetail = {
 };
 export type AgentRow = {
   id: string; name: string; description: string; tools: string[]; trigger: string; output: string;
-  enabled: boolean; owner: string; runs: number; success: number; lastRun: number | null;
+  enabled: boolean; published?: boolean; owner: string; runs: number; success: number; lastRun: number | null;
 };
 export type ApprovalRow = { id: string; tool: string; args: Record<string, unknown>; status: string; createdAt: number };
 export type SettingsResponse = { profile: SessionUser; settings: Record<string, unknown> };

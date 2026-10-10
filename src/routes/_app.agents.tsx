@@ -14,6 +14,7 @@ import {
   Plus,
   ShieldAlert,
   Sparkles,
+  Store,
   Trash2,
   Upload,
   Wrench,
@@ -25,6 +26,7 @@ import { Guard } from "@/components/app/Guard";
 import { artifactMeta } from "@/components/app/artifact-meta";
 import { Bar, PageHeader, Pill } from "@/components/app/ui-bits";
 import { fadeUp, PageTransition, StaggerGroup } from "@/lib/motion";
+import { cn } from "@/lib/utils";
 import {
   api,
   type ActionRow,
@@ -158,6 +160,18 @@ function AgentsPage() {
       setApprovals(p.approvals);
     } catch {
       toast.error("Couldn't record your decision");
+    }
+  }
+
+  async function togglePublish(agent: AgentRow) {
+    const next = !agent.published;
+    try {
+      await api.publishAgent(agent.id, next);
+      toast(next ? "Published to the catalog" : "Removed from the catalog");
+      setSelected((s) => (s && s.id === agent.id ? { ...s, published: next } : s));
+      setAgents((list) => list.map((a) => (a.id === agent.id ? { ...a, published: next } : a)));
+    } catch {
+      toast.error("Couldn't update publishing");
     }
   }
 
@@ -381,6 +395,18 @@ function AgentsPage() {
                   </div>
                 </div>
               </section>
+              <button
+                onClick={() => void togglePublish(selected)}
+                className={cn(
+                  "inline-flex items-center justify-center gap-2 rounded-2xl border py-2.5 text-sm font-semibold transition-colors",
+                  selected.published
+                    ? "border-success/40 bg-success/10 text-success hover:bg-success/15"
+                    : "border-border hover:bg-muted",
+                )}
+              >
+                {selected.published ? <Check className="size-4" /> : <Store className="size-4" />}
+                {selected.published ? "Published in catalog" : "Publish to catalog"}
+              </button>
               <button
                 onClick={() =>
                   toast(`Running ${selected.name}`, {

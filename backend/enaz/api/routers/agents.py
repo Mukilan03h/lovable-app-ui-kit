@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api", tags=["agents"])
 async def list_agents(principal: Principal = Depends(require("agents")), svc: Services = Depends(get_services)) -> dict:
     async with svc.db.acquire(principal.tenant_id) as conn:
         rows = await conn.fetch(
-            """SELECT a.id, a.name, a.description, a.tools, a.trigger, a.output, a.enabled,
+            """SELECT a.id, a.name, a.description, a.tools, a.trigger, a.output, a.enabled, a.published,
                       u.name AS owner, extract(epoch FROM a.last_run) AS last_run,
                       (SELECT count(*) FROM agent_runs r WHERE r.agent_id = a.id) AS runs,
                       (SELECT count(*) FROM agent_runs r WHERE r.agent_id = a.id AND r.status='succeeded') AS ok
@@ -34,7 +34,7 @@ async def list_agents(principal: Principal = Depends(require("agents")), svc: Se
         agents.append({
             "id": str(r["id"]), "name": r["name"], "description": r["description"],
             "tools": _load(r["tools"]), "trigger": r["trigger"], "output": r["output"],
-            "enabled": r["enabled"], "owner": r["owner"] or "Enaz", "runs": runs,
+            "enabled": r["enabled"], "published": r["published"], "owner": r["owner"] or "Enaz", "runs": runs,
             "success": round(100 * (r["ok"] or 0) / runs) if runs else 100, "lastRun": r["last_run"],
         })
     return {"agents": agents}

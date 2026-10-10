@@ -22,6 +22,7 @@ import { Route as AppConnectorsRouteImport } from './routes/_app.connectors'
 import { Route as AppDashboardRouteImport } from './routes/_app.dashboard'
 import { Route as AppInboxRouteImport } from './routes/_app.inbox'
 import { Route as AppInsightsRouteImport } from './routes/_app.insights'
+import { Route as AppRoomsRouteImport } from './routes/_app.rooms'
 import { Route as AppRunsRouteImport } from './routes/_app.runs'
 import { Route as AppSearchRouteImport } from './routes/_app.search'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
@@ -94,6 +95,11 @@ const AppInsightsRoute = AppInsightsRouteImport.update({
   path: '/insights',
   getParentRoute: () => AppRoute,
 } as any)
+const AppRoomsRoute = AppRoomsRouteImport.update({
+  id: '/rooms',
+  path: '/rooms',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppRunsRoute = AppRunsRouteImport.update({
   id: '/runs',
   path: '/runs',
@@ -143,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AppDashboardRoute
   '/inbox': typeof AppInboxRoute
   '/insights': typeof AppInsightsRoute
+  '/rooms': typeof AppRoomsRoute
   '/runs': typeof AppRunsRoute
   '/search': typeof AppSearchRoute
   '/settings': typeof AppSettingsRoute
@@ -164,6 +171,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AppDashboardRoute
   '/inbox': typeof AppInboxRoute
   '/insights': typeof AppInsightsRoute
+  '/rooms': typeof AppRoomsRoute
   '/runs': typeof AppRunsRoute
   '/search': typeof AppSearchRoute
   '/settings': typeof AppSettingsRoute
@@ -187,6 +195,7 @@ export interface FileRoutesById {
   '/_app/dashboard': typeof AppDashboardRoute
   '/_app/inbox': typeof AppInboxRoute
   '/_app/insights': typeof AppInsightsRoute
+  '/_app/rooms': typeof AppRoomsRoute
   '/_app/runs': typeof AppRunsRoute
   '/_app/search': typeof AppSearchRoute
   '/_app/settings': typeof AppSettingsRoute
@@ -210,6 +219,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/inbox'
     | '/insights'
+    | '/rooms'
     | '/runs'
     | '/search'
     | '/settings'
@@ -231,6 +241,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/inbox'
     | '/insights'
+    | '/rooms'
     | '/runs'
     | '/search'
     | '/settings'
@@ -253,6 +264,7 @@ export interface FileRouteTypes {
     | '/_app/dashboard'
     | '/_app/inbox'
     | '/_app/insights'
+    | '/_app/rooms'
     | '/_app/runs'
     | '/_app/search'
     | '/_app/settings'
@@ -364,6 +376,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppInsightsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/rooms': {
+      id: '/_app/rooms'
+      path: '/rooms'
+      fullPath: '/rooms'
+      preLoaderRoute: typeof AppRoomsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/runs': {
       id: '/_app/runs'
       path: '/runs'
@@ -425,6 +444,7 @@ interface AppRouteChildren {
   AppDashboardRoute: typeof AppDashboardRoute
   AppInboxRoute: typeof AppInboxRoute
   AppInsightsRoute: typeof AppInsightsRoute
+  AppRoomsRoute: typeof AppRoomsRoute
   AppRunsRoute: typeof AppRunsRoute
   AppSearchRoute: typeof AppSearchRoute
   AppSettingsRoute: typeof AppSettingsRoute
@@ -442,6 +462,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppDashboardRoute: AppDashboardRoute,
   AppInboxRoute: AppInboxRoute,
   AppInsightsRoute: AppInsightsRoute,
+  AppRoomsRoute: AppRoomsRoute,
   AppRunsRoute: AppRunsRoute,
   AppSearchRoute: AppSearchRoute,
   AppSettingsRoute: AppSettingsRoute,

@@ -17,6 +17,7 @@ import {
   FolderOpen,
   GitBranch,
   Globe,
+  Languages,
   ListChecks,
   Mic,
   MessageSquarePlus,
@@ -136,6 +137,8 @@ const stepIcon: Record<Step["tool"], typeof Search> = {
 };
 
 const efforts = ["Low", "Medium", "High"] as const;
+const languages = ["Auto", "English", "Spanish", "French", "German", "Portuguese", "Italian",
+  "Dutch", "Arabic", "Hindi", "Chinese", "Japanese", "Korean"] as const;
 
 const projects = [
   { name: "GA launch", files: 12 },
@@ -156,6 +159,7 @@ type Turn = {
   artifact: ArtifactKind | undefined;
   mode: string;
   scope: SourceApp[];
+  language?: string;
 };
 
 type ShareTurn = {
@@ -175,6 +179,7 @@ const detectArtifact = (q: string): ArtifactKind | undefined => {
 function AssistantPage() {
   const { user } = useAuth();
   const [mode, setMode] = useState<(typeof modes)[number]["id"]>("auto");
+  const [language, setLanguage] = useState<string>("Auto");
   const [scope, setScope] = useState<SourceApp[]>([]);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -267,7 +272,7 @@ function AssistantPage() {
     }
     setTurns((t) => [
       ...t,
-      { id: Date.now(), question: q, artifact: kind ?? detectArtifact(q), mode, scope: [...scope] },
+      { id: Date.now(), question: q, artifact: kind ?? detectArtifact(q), mode, scope: [...scope], language },
     ]);
     setInput("");
   };
@@ -578,6 +583,24 @@ function AssistantPage() {
                 >
                   <Globe className="size-3" /> Web
                 </button>
+                <label
+                  title="Answer language"
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium",
+                    language !== "Auto" ? "border-brand bg-brand/12 text-brand" : "border-border text-muted-foreground",
+                  )}
+                >
+                  <Languages className="size-3" />
+                  <select
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value)}
+                    className="cursor-pointer bg-transparent pr-1 outline-none"
+                  >
+                    {languages.map((l) => (
+                      <option key={l} value={l}>{l === "Auto" ? "Language" : l}</option>
+                    ))}
+                  </select>
+                </label>
                 {scopeSources.map((s) => (
                   <button
                     key={s}
@@ -964,6 +987,7 @@ function useTurn(turn: Turn, conversationId: string): TurnState {
         artifact: turn.artifact,
         sources: turn.scope.length ? turn.scope : undefined,
         conversationId,
+        answerLanguage: turn.language && turn.language !== "Auto" ? turn.language : undefined,
       },
       (ev) => setState((prev) => reduceEvent(prev, ev)),
       ctrl.signal,
