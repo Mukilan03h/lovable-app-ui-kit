@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  Database,
   History,
   KeyRound,
   Layers,
@@ -35,6 +36,8 @@ import {
   type CredentialRow,
   type DocumentSet,
   type IndexAttempt,
+  type LiveQueryResult,
+  type LiveSource,
 } from "@/lib/api";
 
 export const Route = createFileRoute("/_app/connectors")({
@@ -497,6 +500,8 @@ function ConnectorsPage() {
             manage={manage}
             onChanged={() => void load()}
           />
+
+          <LiveSourcesSection manage={manage} />
 
           <section id="catalog" className="scroll-mt-24 space-y-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1035,6 +1040,310 @@ function DocumentSetsSection({
               )}
             </li>
           ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+/** Live business-data sources: list, create (sql/rest), delete, and run ad-hoc queries. */
+function LiveSourcesSection({ manage }: { manage: boolean }) {
+  const [sources, setSources] = useState<LiveSource[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<"sql" | "rest">("sql");
+  const [description, setDescription] = useState("");
+  const [sqlQuery, setSqlQuery] = useState("");
+  const [restUrl, setRestUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [running, setRunning] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<string, LiveQueryResult>>({});
+
+  const load = () => {
+    setFailed(false);
+    return api
+      .liveSources()
+      .then((r) => setSources(r.sources))
+      .catch(() => setFailed(true));
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const reset = () => {
+    setName("");
+    setKind("sql");
+    setDescription("");
+    setSqlQuery("");
+    setRestUrl("");
+    setOpen(false);
+  };
+
+  const create = async () => {
+    if (!name.trim()) {
+      toast.error("Name is required");
+      return;
+    }
+    if (kind === "sql" && !sqlQuery.trim()) {
+      toast.error("A SQL query is required");
+      return;
+    }
+    if (kind === "rest" && !restUrl.trim()) {
+      toast.error("A URL is required");
+      return;
+    }
+    const config: Record<string, unknown> =
+      kind === "sql" ? { query: sqlQuery.trim() } : { url: restUrl.trim() };
+    setSaving(true);
+    try {
+      const body: { name: string; kind: string; description?: string; config: Record<string, unknown> } = {
+        name: name.trim(),
+        kind,
+        config,
+      };
+      if (description.trim()) body.description = description.trim();
+      await api.createLiveSource(body);
+      toast.success(`Created ${name.trim()}`);
+      reset();
+      await load();
+    } catch {
+      toast.error("Couldn't create live source");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (s: LiveSource) => {
+    setBusyId(s.id);
+    try {
+      await api.deleteLiveSource(s.id);
+      toast.success(`Removed ${s.name}`);
+      setResults((cur) => {
+        const next = { ...cur };
+        delete next[s.id];
+        return next;
+      });
+      await load();
+    } catch {
+      toast.error(`Couldn't remove ${s.name}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const run = async (s: LiveSource) => {
+    setRunning(s.id);
+    try {
+      const res = await api.queryLiveSource(s.id);
+      setResults((cur) => ({ ...cur, [s.id]: res }));
+      toast.success(`${s.name}: ${res.rowCount} row${res.rowCount === 1 ? "" : "s"}`);
+    } catch {
+      toast.error(`Couldn't query ${s.name}`);
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  return (
+    <Panel
+      title={
+        <span className="inline-flex items-center gap-2">
+          <Database className="size-4" /> Live data
+        </span>
+      }
+      action={
+        manage ? (
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-semibold hover:bg-muted"
+          >
+            <Plus className="size-3.5" /> New source
+          </button>
+        ) : undefined
+      }
+    >
+      {manage && open && (
+        <div className="mb-4 space-y-3 rounded-2xl border border-border bg-muted/30 p-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Name</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Open orders"
+                className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none"
+              />
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="text-muted-foreground">Kind</span>
+              <select
+                value={kind}
+                onChange={(e) => setKind(e.target.value as "sql" | "rest")}
+                className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none"
+              >
+                <option value="sql">SQL query</option>
+                <option value="rest">REST endpoint</option>
+              </select>
+            </label>
+          </div>
+          <label className="block space-y-1 text-xs">
+            <span className="text-muted-foreground">Description</span>
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional"
+              className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none"
+            />
+          </label>
+          {kind === "sql" ? (
+            <label className="block space-y-1 text-xs">
+              <span className="text-muted-foreground">Query</span>
+              <textarea
+                value={sqlQuery}
+                onChange={(e) => setSqlQuery(e.target.value)}
+                rows={3}
+                placeholder="select id, status from orders where status = 'open'"
+                className="w-full rounded-xl border border-border bg-card px-3 py-2 font-mono text-sm outline-none"
+              />
+            </label>
+          ) : (
+            <label className="block space-y-1 text-xs">
+              <span className="text-muted-foreground">URL</span>
+              <input
+                value={restUrl}
+                onChange={(e) => setRestUrl(e.target.value)}
+                placeholder="https://api.internal/orders?status=open"
+                className="w-full rounded-xl border border-border bg-card px-3 py-2 text-sm outline-none"
+              />
+            </label>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={reset}
+              className="rounded-xl border border-border px-3 py-2 text-xs font-semibold hover:bg-muted"
+            >
+              Cancel
+            </button>
+            <button
+              disabled={saving}
+              onClick={() => void create()}
+              className="rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              Create source
+            </button>
+          </div>
+        </div>
+      )}
+
+      {failed ? (
+        <div className="flex items-center gap-2 text-sm text-destructive">
+          <AlertTriangle className="size-4 shrink-0" />
+          <span>Couldn't load live sources.</span>
+          <button onClick={() => void load()} className="ml-1 font-semibold underline">
+            Retry
+          </button>
+        </div>
+      ) : sources === null ? (
+        <p className="text-sm text-muted-foreground">Loading live sources…</p>
+      ) : sources.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No live sources yet. Add a SQL query or REST endpoint to query business data in real time.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {sources.map((s) => {
+            const result = results[s.id];
+            return (
+              <li key={s.id} className="rounded-2xl border border-border bg-card px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <Database className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                      {s.name}
+                      <Pill tone="neutral" className="uppercase">
+                        {s.kind}
+                      </Pill>
+                      {!s.enabled && <Pill tone="warning">Disabled</Pill>}
+                    </p>
+                    {s.description && (
+                      <p className="truncate text-xs text-muted-foreground">{s.description}</p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      disabled={running === s.id || !s.enabled}
+                      onClick={() => void run(s)}
+                      className="inline-flex items-center gap-1 rounded-xl border border-border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50"
+                    >
+                      {running === s.id ? (
+                        <RefreshCw className="size-3.5 animate-spin" />
+                      ) : (
+                        <Play className="size-3.5" />
+                      )}
+                      Run
+                    </button>
+                    {manage && (
+                      <button
+                        disabled={busyId === s.id}
+                        onClick={() => void remove(s)}
+                        className="rounded-xl border border-border p-2 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                        aria-label={`Remove ${s.name}`}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {result && (
+                  <div className="mt-3 space-y-2">
+                    <p className="text-[11px] text-muted-foreground">
+                      {result.rowCount} row{result.rowCount === 1 ? "" : "s"} · checked{" "}
+                      {relTime(result.checkedAt)}
+                    </p>
+                    {result.columns.length === 0 || result.rows.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No rows returned.</p>
+                    ) : (
+                      <div className="overflow-x-auto rounded-xl border border-border">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-muted/50 text-muted-foreground">
+                            <tr>
+                              {result.columns.map((col, ci) => (
+                                <th key={ci} className="px-3 py-2 font-medium">
+                                  {col}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.rows.map((row, ri) => (
+                              <tr key={ri} className="border-t border-border">
+                                {result.columns.map((_col, ci) => {
+                                  const cell = row[ci];
+                                  return (
+                                    <td key={ci} className="px-3 py-2 tabular-nums">
+                                      {cell === null || cell === undefined
+                                        ? ""
+                                        : typeof cell === "object"
+                                          ? JSON.stringify(cell)
+                                          : String(cell)}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </Panel>

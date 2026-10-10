@@ -13,11 +13,13 @@ import {
   Lock,
   MoreHorizontal,
   Pin,
+  RefreshCw,
   Search,
   Share2,
   Trash2,
   Users,
   Wand2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Guard } from "@/components/app/Guard";
@@ -33,7 +35,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { PageTransition } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import { api, downloadUrl, type ArtifactRow } from "@/lib/api";
+import {
+  api,
+  downloadUrl,
+  type ArtifactFreshness,
+  type ArtifactRefresh,
+  type ArtifactRow,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/_app/artifacts")({
   head: () => ({
@@ -86,6 +94,15 @@ function ArtifactsPage() {
   const [rows, setRows] = useState<ArtifactRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // lazy per-artifact source-freshness, keyed by artifact id
+  const [freshness, setFreshness] = useState<Record<string, ArtifactFreshness>>({});
+  const [checking, setChecking] = useState<string | null>(null);
+  // active refresh proposal (does not overwrite until accepted)
+  const [refresh, setRefresh] = useState<{ id: string; title: string; data: ArtifactRefresh } | null>(
+    null,
+  );
+  const [refreshing, setRefreshing] = useState<string | null>(null);
 
   const load = () => {
     setError(null);
@@ -156,6 +173,53 @@ function ArtifactsPage() {
     } catch {
       toast.error(`Couldn't delete ${a.title}`);
       await load();
+    }
+  };
+
+  const checkFreshness = async (a: ArtifactRow) => {
+    setChecking(a.id);
+    try {
+      const f = await api.artifactFreshness(a.id);
+      setFreshness((cur) => ({ ...cur, [a.id]: f }));
+      if (f.sourceCount === 0) toast("No linked sources to check");
+      else if (f.stale)
+        toast.warning(`${a.title}: sources changed`, {
+          description: `${f.changedSources.length} changed, ${f.missingSources.length} removed`,
+        });
+      else toast.success(`${a.title} is up to date`);
+    } catch {
+      toast.error("Couldn't check sources");
+    } finally {
+      setChecking(null);
+    }
+  };
+
+  const startRefresh = async (a: ArtifactRow) => {
+    setRefreshing(a.id);
+    try {
+      const data = await api.refreshArtifact(a.id);
+      setRefresh({ id: a.id, title: a.title, data });
+    } catch {
+      toast.error(`Couldn't prepare a refresh for ${a.title}`);
+    } finally {
+      setRefreshing(null);
+    }
+  };
+
+  const acceptRefresh = async () => {
+    if (!refresh) return;
+    try {
+      await api.acceptArtifactRefresh(refresh.id, refresh.data.proposedSpec);
+      toast.success("Updated to a new version");
+      setRefresh(null);
+      setFreshness((cur) => {
+        const next = { ...cur };
+        delete next[refresh.id];
+        return next;
+      });
+      await load();
+    } catch {
+      toast.error("Couldn't apply the refresh");
     }
   };
 
@@ -296,9 +360,12 @@ function ArtifactsPage() {
                       </div>
                       <ItemMenu
                         item={a}
+                        stale={freshness[a.id]?.stale}
                         onPin={() => void togglePin(a)}
                         onRevise={() => void revise(a)}
                         onDelete={() => void remove(a)}
+                        onCheck={() => void checkFreshness(a)}
+                        onRefresh={() => void startRefresh(a)}
                       />
                     </div>
                   </motion.article>
@@ -350,9 +417,12 @@ function ArtifactsPage() {
                         <td className="px-4 py-2.5 text-right">
                           <ItemMenu
                             item={a}
+                            stale={freshness[a.id]?.stale}
                             onPin={() => void togglePin(a)}
                             onRevise={() => void revise(a)}
                             onDelete={() => void remove(a)}
+                            onCheck={() => void checkFreshness(a)}
+                            onRefresh={() => void startRefresh(a)}
                           />
                         </td>
                       </tr>
@@ -370,6 +440,79 @@ function ArtifactsPage() {
           )}
         </>
       )}
+      <AnimatePresence>
+        {refresh && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"
+            onClick={() => setRefresh(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg rounded-3xl border border-border bg-card p-5 shadow-[var(--shadow-soft)]"
+            >
+              <div className="flex items-center gap-2">
+                <RefreshCw className="size-4 text-brand" />
+                <p className="text-sm font-semibold">Refresh “{refresh.title}”</p>
+                <button
+                  onClick={() => setRefresh(null)}
+                  className="ml-auto grid size-7 place-items-center rounded-lg hover:bg-muted"
+                  aria-label="Close"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Rebuilt from the sources' current content. Review the changes — your current version is
+                kept until you accept.
+              </p>
+              <div className="mt-3 max-h-64 space-y-1.5 overflow-y-auto rounded-2xl border border-border bg-background/60 p-3 text-xs">
+                {refresh.data.diff.length === 0 ? (
+                  <p className="text-muted-foreground">No structural changes — content may still differ.</p>
+                ) : (
+                  refresh.data.diff.map((d, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <span
+                        className={cn(
+                          "rounded px-1.5 py-0.5 font-medium",
+                          d.change === "added" && "bg-success/15 text-success",
+                          d.change === "removed" && "bg-destructive/15 text-destructive",
+                          (d.change === "title" || d.change === "count") && "bg-warning/18 text-warning",
+                        )}
+                      >
+                        {String(d.change)}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {"section" in d && d["section"] ? String(d["section"]) : ""}
+                        {"from" in d ? `${String(d["from"])} → ${String(d["to"])}` : ""}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  onClick={() => setRefresh(null)}
+                  className="rounded-full border border-border px-4 py-1.5 text-xs font-medium hover:bg-muted"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void acceptRefresh()}
+                  className="rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-primary-foreground"
+                >
+                  Accept update
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </PageTransition>
   );
 }
@@ -412,11 +555,17 @@ function ItemMenu({
   onPin,
   onRevise,
   onDelete,
+  onCheck,
+  onRefresh,
+  stale,
 }: {
   item: ArtifactRow;
   onPin: () => void;
   onRevise: () => void;
   onDelete: () => void;
+  onCheck: () => void;
+  onRefresh: () => void;
+  stale?: boolean | undefined;
 }) {
   return (
     <DropdownMenu>
@@ -438,6 +587,12 @@ function ItemMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => void onRevise()}>
           <Wand2 className="size-4" /> Revise
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void onCheck()}>
+          <History className="size-4" /> Check sources
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => void onRefresh()}>
+          <RefreshCw className="size-4" /> {stale ? "Refresh (sources changed)" : "Refresh from sources"}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => toast.success("Share link copied")}>
           <Share2 className="size-4" /> Share

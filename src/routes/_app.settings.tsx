@@ -33,7 +33,7 @@ import {
   Toggle,
 } from "@/components/app/settings-ui";
 import { Slider } from "@/components/ui/slider";
-import { api } from "@/lib/api";
+import { api, type MemoryRow } from "@/lib/api";
 import { PageTransition } from "@/lib/motion";
 import { useAuth, roleLabel } from "@/lib/auth";
 import { accents, useTheme, type ChatBackground, type ThemeMode } from "@/lib/theme";
@@ -492,20 +492,73 @@ function ChatPrefs() {
   );
 }
 
-const initialMemories = [
-  "Prefers concise answers with a summary first",
-  "Works on the GA launch and Globex renewal",
-  "Uses the company brand template for decks",
-  "Time zone is IST; schedule summaries for 9am",
-];
+const memoryScopeMeta: Record<string, { label: string; tone: "brand" | "info" | "success" }> = {
+  personal: { label: "Personal", tone: "brand" },
+  agent: { label: "Agent", tone: "info" },
+  shared: { label: "Shared", tone: "success" },
+};
+const memoryScopeOrder = ["personal", "agent", "shared"] as const;
 
 function Personalization() {
   const [instructions, setInstructions] = useState(
     "Lead with the answer, then the evidence. Use tables for comparisons.",
   );
-  const [memories, setMemories] = useState(initialMemories);
+  const [memories, setMemories] = useState<MemoryRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [text, setText] = useState("");
+  const [scope, setScope] = useState<"personal" | "shared">("personal");
+  const [adding, setAdding] = useState(false);
   const [useMemory, setUseMemory] = useState(true);
   const [updateMemory, setUpdateMemory] = useState(true);
+
+  const load = () => {
+    setFailed(false);
+    return api
+      .memory()
+      .then((r) => setMemories(r.memories))
+      .catch(() => setFailed(true))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!text.trim()) {
+      toast.error("Enter something to remember");
+      return;
+    }
+    setAdding(true);
+    try {
+      await api.addMemory({ text: text.trim(), scope });
+      setText("");
+      toast.success("Memory saved");
+      await load();
+    } catch {
+      toast.error("Couldn't save memory");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const remove = async (m: MemoryRow) => {
+    setMemories((all) => all.filter((x) => x.id !== m.id));
+    try {
+      await api.deleteMemory(m.id);
+      toast.success("Memory forgotten");
+    } catch {
+      toast.error("Couldn't delete memory");
+      await load();
+    }
+  };
+
+  const groups = memoryScopeOrder
+    .map((s) => ({ scope: s, items: memories.filter((m) => m.scope === s) }))
+    .filter((g) => g.items.length > 0);
+
   return (
     <>
       <SettingsSection title="Personal instructions" description="Added to every conversation.">
@@ -523,33 +576,87 @@ function Personalization() {
         <SettingRow label="Learn new memories" description="Asks before saving anything sensitive.">
           <Toggle label="Learn memories" checked={updateMemory} onChange={setUpdateMemory} />
         </SettingRow>
-        <ul className="py-3">
-          <AnimatePresence initial={false}>
-            {memories.map((m) => (
-              <motion.li
-                key={m}
-                layout
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="flex items-center gap-3 py-2 text-sm"
-              >
-                <Brain className="size-4 shrink-0 text-brand" />
-                <span className="flex-1">{m}</span>
-                <button
-                  onClick={() => setMemories((all) => all.filter((x) => x !== m))}
-                  className="grid size-7 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive"
-                  aria-label="Forget memory"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
-              </motion.li>
-            ))}
-          </AnimatePresence>
-          {memories.length === 0 && (
-            <li className="py-2 text-sm text-muted-foreground">No memories saved.</li>
+
+        <SettingRow
+          label="Add a memory"
+          description="Personal memories are only for you; shared memories apply across your team."
+          stack
+        >
+          <form onSubmit={add} className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Segmented
+              id="memory-scope"
+              value={scope}
+              onChange={setScope}
+              options={[
+                { value: "personal", label: "Personal" },
+                { value: "shared", label: "Shared" },
+              ]}
+            />
+            <TextField value={text} onChange={setText} placeholder="Something to remember…" />
+            <button
+              disabled={adding}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              <Plus className="size-4" /> Add
+            </button>
+          </form>
+        </SettingRow>
+
+        <div className="py-3">
+          {loading ? (
+            <p className="py-2 text-sm text-muted-foreground">Loading memories…</p>
+          ) : failed ? (
+            <div className="flex items-center gap-2 py-2 text-sm text-destructive">
+              <TriangleAlert className="size-4 shrink-0" />
+              <span>Couldn't load memories.</span>
+              <button onClick={() => void load()} className="ml-1 font-semibold underline">
+                Retry
+              </button>
+            </div>
+          ) : memories.length === 0 ? (
+            <p className="py-2 text-sm text-muted-foreground">No memories saved.</p>
+          ) : (
+            <div className="space-y-4">
+              {groups.map((g) => {
+                const meta = memoryScopeMeta[g.scope] ?? { label: g.scope, tone: "info" as const };
+                return (
+                  <div key={g.scope}>
+                    <div className="mb-1 flex items-center gap-2">
+                      <Pill tone={meta.tone}>{meta.label}</Pill>
+                      <span className="text-xs text-muted-foreground">
+                        {g.items.length} item{g.items.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <ul>
+                      <AnimatePresence initial={false}>
+                        {g.items.map((m) => (
+                          <motion.li
+                            key={m.id}
+                            layout
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="flex items-center gap-3 py-2 text-sm"
+                          >
+                            <Brain className="size-4 shrink-0 text-brand" />
+                            <span className="flex-1">{m.text}</span>
+                            <button
+                              onClick={() => void remove(m)}
+                              className="grid size-7 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-destructive"
+                              aria-label="Forget memory"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </motion.li>
+                        ))}
+                      </AnimatePresence>
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
           )}
-        </ul>
+        </div>
       </SettingsSection>
       <SaveBar />
     </>
